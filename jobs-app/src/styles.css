@@ -197,10 +197,11 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .cv-preview { display: -webkit-box; overflow: hidden; padding: 11px; border-radius: 9px; background: #f6f8fb; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
 .cv-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: auto; padding-top: 3px; }
 .job-form label small { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.45; }
-.google-actions { display: grid; gap: 10px; padding: 15px; border: 1px solid #c7d8f7; border-radius: 12px; background: #f5f8ff; }
-.google-actions > div:first-child { display: grid; gap: 4px; }
-.google-actions > div:first-child strong { font-size: 13px; }
-.google-actions > div:first-child span, .google-actions > small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.google-actions, .ai-actions { display: grid; gap: 10px; padding: 15px; border: 1px solid #c7d8f7; border-radius: 12px; background: #f5f8ff; }
+.ai-actions { grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-color: #cdbcf5; background: #faf8ff; }
+.google-actions > div:first-child, .ai-actions > div:first-child { display: grid; gap: 4px; }
+.google-actions > div:first-child strong, .ai-actions > div:first-child strong { font-size: 13px; }
+.google-actions > div:first-child span, .google-actions > small, .ai-actions > div:first-child span, .ai-actions > small { color: var(--muted); font-size: 11px; line-height: 1.45; }
 .google-actions .button-row { margin-top: 0; }
 .send-history { display: grid; gap: 8px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; }
 .send-history > strong { font-size: 13px; }
@@ -245,6 +246,27 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 5px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
+.tailor-modal { width: min(980px, 100%); }
+.tailor-body { display: grid; gap: 18px; padding: 24px; }
+.tailor-inputs { display: grid; grid-template-columns: minmax(220px, .6fr) minmax(0, 1.4fr); align-items: start; gap: 16px; }
+.tailor-inputs label, .tailor-output label { display: grid; gap: 7px; color: #344054; font-size: 12px; font-weight: 750; }
+.tailor-inputs small, .tailor-output > small { color: var(--muted); font-size: 10px; font-weight: 500; line-height: 1.45; }
+.match-panel { display: grid; gap: 13px; padding: 17px; border: 1px solid #d6dce5; border-radius: 13px; background: #f8fafc; }
+.match-panel > div:first-child { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 3px 16px; }
+.match-panel > div:first-child span { color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
+.match-panel > div:first-child strong { grid-row: span 2; font-size: 30px; }
+.match-panel > div:first-child strong.good { color: var(--green); }
+.match-panel > div:first-child strong.fair { color: #9a6700; }
+.match-panel > div:first-child strong.low { color: var(--red); }
+.match-panel p, .match-panel > small { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.keyword-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tailor-output { display: grid; gap: 16px; padding-top: 4px; }
+.ai-review-warning { display: grid; gap: 4px; padding: 13px 15px; border: 1px solid #f1cc77; border-radius: 11px; background: #fff8e7; }
+.ai-review-warning strong { color: #825500; font-size: 12px; }
+.ai-review-warning span { color: #725c2d; font-size: 11px; line-height: 1.5; }
+.review-notes { padding: 14px 16px; border: 1px solid var(--line); border-radius: 11px; background: #f8fafc; }
+.review-notes ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 210px minmax(0, 1fr); }
   .dashboard { padding: 30px 22px 60px; }
@@ -272,6 +294,8 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
   .row-actions { justify-content: flex-start; }
   .sync-retry-banner { align-items: stretch; flex-direction: column; }
   .sync-retry-banner .button { width: 100%; }
+  .tailor-inputs { grid-template-columns: 1fr; }
+  .ai-actions { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {

@@ -13,6 +13,7 @@ type JobFormProps = {
   sendHistory: ApplicationSend[]
   onCancel: () => void
   onSave: (draft: JobDraft) => Promise<void>
+  onTailor: (draft: JobDraft) => Promise<void>
   onCalendar: (draft: JobDraft) => Promise<void>
   onSend: (draft: JobDraft) => Promise<void>
   onRetrySendHistory: () => Promise<void>
@@ -32,7 +33,7 @@ function sentAtLabel(value: string) {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
-export function JobForm({ initial, title, busy, error, cvs, existing, googleConfigured, sendHistoryPending, sendHistory, onCancel, onSave, onCalendar, onSend, onRetrySendHistory }: JobFormProps) {
+export function JobForm({ initial, title, busy, error, cvs, existing, googleConfigured, sendHistoryPending, sendHistory, onCancel, onSave, onTailor, onCalendar, onSend, onRetrySendHistory }: JobFormProps) {
   const [draft, setDraft] = useState<JobDraft>(() => withEmailDefaults(initial))
 
   function field<K extends keyof JobDraft>(key: K, value: JobDraft[K]) {
@@ -73,6 +74,12 @@ export function JobForm({ initial, title, busy, error, cvs, existing, googleConf
           <label>Email recipient<input type="email" value={draft.email_recipient} onChange={(event) => field('email_recipient', event.target.value)} /></label>
           <label>Email subject<input value={draft.email_subject} onChange={(event) => field('email_subject', event.target.value)} /></label>
           <label className="full">Email message<textarea rows={6} value={draft.email_body} onChange={(event) => field('email_body', event.target.value)} /></label>
+
+          <section className="ai-actions full" aria-label="CV matching and AI drafting">
+            <div><strong>CV match and tailoring</strong><span>Compare your saved CV text with this job for free, then optionally create an AI-assisted CV and cover-letter draft.</span></div>
+            <button className="button secondary" disabled={busy || !existing} type="button" onClick={(event) => { if (event.currentTarget.form?.reportValidity()) void onTailor(draft) }}>Open tailoring tool</button>
+            {!existing && <small>Save the application once before opening the tailoring tool.</small>}
+          </section>
 
           <section className="google-actions full" aria-label="Google actions">
             <div><strong>Google actions</strong><span>{googleConfigured ? 'Google will ask for Calendar and Gmail permission when needed. Access stays in this browser session.' : 'Add your public Google OAuth client ID in Settings to enable these actions.'}</span></div>
