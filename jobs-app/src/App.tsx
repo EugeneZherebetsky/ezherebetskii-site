@@ -36,6 +36,14 @@ function friendlySignInError(message: string) {
   return 'We could not sign you in. Please try again.'
 }
 
+function toLocalDateTimeInput(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 function toDraft(job: Job): JobDraft {
   return {
     company: job.company,
@@ -48,7 +56,7 @@ function toDraft(job: Job): JobDraft {
     contact_name: job.contact_name ?? '',
     contact_email: job.contact_email ?? '',
     applied_at: job.applied_at ?? '',
-    next_action_at: job.next_action_at ? job.next_action_at.slice(0, 16) : '',
+    next_action_at: job.next_action_at ? toLocalDateTimeInput(job.next_action_at) : '',
     notes: job.notes ?? '',
   }
 }
@@ -112,11 +120,12 @@ type JobFormProps = {
   initial: JobDraft
   title: string
   busy: boolean
+  error: string
   onCancel: () => void
   onSave: (draft: JobDraft) => Promise<void>
 }
 
-function JobForm({ initial, title, busy, onCancel, onSave }: JobFormProps) {
+function JobForm({ initial, title, busy, error, onCancel, onSave }: JobFormProps) {
   const [draft, setDraft] = useState<JobDraft>(initial)
 
   function field<K extends keyof JobDraft>(key: K, value: JobDraft[K]) {
@@ -146,6 +155,7 @@ function JobForm({ initial, title, busy, onCancel, onSave }: JobFormProps) {
           <label>Applied date<input type="date" value={draft.applied_at} onChange={(event) => field('applied_at', event.target.value)} /></label>
           <label>Next action<input type="datetime-local" value={draft.next_action_at} onChange={(event) => field('next_action_at', event.target.value)} /></label>
           <label className="full">Notes<textarea rows={5} value={draft.notes} onChange={(event) => field('notes', event.target.value)} /></label>
+          {error && <p className="form-message full" role="alert">{error}</p>}
           <div className="form-actions full">
             <button className="button secondary" type="button" onClick={onCancel}>Cancel</button>
             <button className="button primary" disabled={busy} type="submit">{busy ? 'Saving…' : 'Save application'}</button>
@@ -204,6 +214,9 @@ function Dashboard({ session }: { session: Session }) {
   }), [jobs])
 
   async function saveJob(draft: JobDraft) {
+    if (!editing) return
+    const recordBeingEdited = editing
+
     setBusy(true)
     setError('')
     const payload = {
@@ -221,11 +234,25 @@ function Dashboard({ session }: { session: Session }) {
       notes: clean(draft.notes),
       data: {},
     }
-    const result = editing === 'new'
-      ? await supabase.from('jobs').insert({ ...payload, user_id: session.user.id })
-      : await supabase.from('jobs').update(payload).eq('id', editing!.id).eq('version', editing!.version)
+    const result = recordBeingEdited === 'new'
+      ? await supabase.from('jobs').insert({ ...payload, user_id: session.user.id }).select('id, version').maybeSingle()
+      : await supabase.from('jobs').update(payload).eq('id', recordBeingEdited.id).eq('version', recordBeingEdited.version).select('id, version').maybeSingle()
     if (result.error) setError(result.error.message)
-    else {
+    else if (!result.data && recordBeingEdited !== 'new') {
+      const { data: latest, error: latestError } = await supabase
+        .from('jobs')
+        .select('version')
+        .eq('id', recordBeingEdited.id)
+        .maybeSingle()
+
+      if (latestError) setError(latestError.message)
+      else if (!latest) setError('This application was deleted on another device. Your unsaved edits remain visible here.')
+      else {
+        setEditing({ ...recordBeingEdited, version: latest.version })
+        setError('This application changed on another device. Your edits remain open. Review them, then save again to use this version.')
+      }
+      await loadJobs()
+    } else {
       setEditing(null)
       await loadJobs()
     }
@@ -264,7 +291,7 @@ function Dashboard({ session }: { session: Session }) {
           {loading ? <div className="empty-state">Loading your applications…</div> : visibleJobs.length === 0 ? <div className="empty-state"><strong>{jobs.length ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{jobs.length ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="job-list">{visibleJobs.map((job) => <article className="job-card" key={job.id}><div className="job-main"><span className={`status ${job.status}`}>{statusLabels[job.status]}</span><h3>{job.role_title}</h3><p className="company">{job.company}{job.location ? ` · ${job.location}` : ''}</p><div className="job-meta">{job.applied_at && <span>Applied {new Date(`${job.applied_at}T00:00:00`).toLocaleDateString()}</span>}{job.next_action_at && <span>Next: {new Date(job.next_action_at).toLocaleString()}</span>}{job.contact_name && <span>Contact: {job.contact_name}</span>}</div></div><div className="job-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open role</a>}<button className="button secondary" onClick={() => setEditing(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void deleteJob(job)}>Delete</button></div></article>)}</div>}
         </section>
       </main>
-      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} onCancel={() => setEditing(null)} onSave={saveJob} />}
+      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} />}
     </div>
   )
 }
