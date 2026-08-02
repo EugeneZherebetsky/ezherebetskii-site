@@ -39,6 +39,8 @@ import { CVForm } from './CVForm'
 import { JobForm } from './JobForm'
 import { JobSearch } from './JobSearch'
 import type { JobSearchResult } from '../lib/jobSearch'
+import { TailorCV } from './TailorCV'
+import { tailoredCVText, type TailoringResult } from '../lib/tailoring'
 
 const NAV_ITEMS: Array<{ view: AppView; label: string; symbol: string }> = [
   { view: 'dashboard', label: 'Dashboard', symbol: '◫' },
@@ -161,6 +163,7 @@ export function Workspace({ session }: WorkspaceProps) {
   const [filter, setFilter] = useState<'all' | JobStatus>('all')
   const [editing, setEditing] = useState<Job | 'new' | null>(null)
   const [editingCV, setEditingCV] = useState<CV | 'new' | null>(null)
+  const [tailoringJob, setTailoringJob] = useState<Job | null>(null)
   const [googleConnected, setGoogleConnected] = useState(false)
   const [pendingSendHistory, setPendingSendHistory] = useState<ApplicationSend | null>(() => readPendingSend(session.user.id))
   const initialViewSet = useRef(false)
@@ -317,6 +320,114 @@ export function Workspace({ session }: WorkspaceProps) {
       setNotice('Application saved and synchronized.')
       await loadWorkspace()
     }
+    setBusy(false)
+  }
+
+  async function saveAndOpenTailoring(draft: JobDraft) {
+    if (!editing || editing === 'new') return
+    if (!draft.company.trim() || !draft.role_title.trim()) {
+      setError('Add the company and role title before opening the tailoring tool.')
+      return
+    }
+    const recordBeingEdited = editing
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: updateError } = await supabase
+      .from('jobs')
+      .update(draftToPayload(draft))
+      .eq('id', recordBeingEdited.id)
+      .eq('version', recordBeingEdited.version)
+      .select('*')
+      .maybeSingle()
+    if (updateError) setError(updateError.message)
+    else if (!data) {
+      const { data: latest } = await supabase.from('jobs').select('version').eq('id', recordBeingEdited.id).maybeSingle()
+      if (latest) setEditing({ ...recordBeingEdited, version: latest.version })
+      setError(latest ? 'This application changed on another device. Your edits remain open. Review them, then try again.' : 'This application was deleted on another device. Your edits remain open.')
+      await loadWorkspace()
+    }
+    else {
+      setEditing(null)
+      setTailoringJob(data as Job)
+      await loadWorkspace()
+    }
+    setBusy(false)
+  }
+
+  async function saveTailoredCV(sourceCV: CV, result: TailoringResult) {
+    if (!tailoringJob) return
+    const job = tailoringJob
+    const cvId = crypto.randomUUID()
+    const plainText = tailoredCVText(result)
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: insertError } = await supabase.from('cvs').insert({
+      id: cvId,
+      user_id: session.user.id,
+      name: `${job.company} — ${job.role_title}`,
+      target_role: job.role_title,
+      notes: `AI-assisted draft based on ${sourceCV.name}. Review every claim before use.`,
+      plain_text: plainText,
+      tailored_company: job.company,
+      storage_path: null,
+      original_filename: null,
+      mime_type: 'text/plain',
+      size_bytes: new Blob([plainText]).size,
+      data: {
+        ai_tailoring: {
+          model: result.model,
+          generation_id: result.generation_id,
+          job_id: job.id,
+          source_cv_id: sourceCV.id,
+          generated_at: new Date().toISOString(),
+        },
+      },
+    })
+    if (insertError) {
+      setError(insertError.message)
+      setBusy(false)
+      return
+    }
+
+    const { data: linked, error: linkError } = await supabase
+      .from('jobs')
+      .update({ cv_id: cvId })
+      .eq('id', job.id)
+      .eq('version', job.version)
+      .select('id')
+      .maybeSingle()
+    if (linkError) setError(`The CV was saved, but could not be linked: ${linkError.message}`)
+    else if (!linked) setError('The CV was saved, but this application changed on another device. Open it and link the new CV manually.')
+    else {
+      setTailoringJob(null)
+      setNotice('Tailored CV saved, linked to the application, and synchronized.')
+    }
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function useTailoredCoverLetter(result: TailoringResult) {
+    if (!tailoringJob) return
+    const job = tailoringJob
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: updateError } = await supabase
+      .from('jobs')
+      .update({ email_body: result.cover_letter })
+      .eq('id', job.id)
+      .eq('version', job.version)
+      .select('*')
+      .maybeSingle()
+    if (updateError) setError(updateError.message)
+    else if (!data) setError('This application changed on another device. Reload the tailoring tool and try again so no newer edits are overwritten.')
+    else {
+      setTailoringJob(data as Job)
+      setNotice('Cover letter saved in the application email draft and synchronized.')
+    }
+    await loadWorkspace()
     setBusy(false)
   }
 
@@ -932,7 +1043,7 @@ export function Workspace({ session }: WorkspaceProps) {
             <>
               {view === 'dashboard' && <DashboardView jobs={jobs} counts={counts} reminders={reminders} onEdit={openEditor} onViewAll={() => setView('applications')} />}
               {view === 'board' && <BoardView jobs={jobs} cvs={cvs} busy={busy} onEdit={openEditor} onStatus={changeStatus} onCV={changeJobCV} />}
-              {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} sends={applicationSends} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onDelete={deleteJob} onDownloadCV={downloadCV} />}
+              {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} sends={applicationSends} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onTailor={(job) => { setError(''); setNotice(''); setTailoringJob(job) }} onDelete={deleteJob} onDownloadCV={downloadCV} />}
               {view === 'reminders' && <RemindersView jobs={reminders} onEdit={openEditor} onEnable={enableNotifications} />}
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
               {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} googleConnected={googleConnected} onSave={saveSettings} onConnectGoogle={connectGoogle} onEnableNotifications={enableNotifications} />}
@@ -943,8 +1054,9 @@ export function Workspace({ session }: WorkspaceProps) {
         </main>
       </div>
 
-      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
+      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onTailor={saveAndOpenTailoring} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
+      {tailoringJob && <TailorCV job={tailoringJob} cvs={cvs} busy={busy} actionError={error} actionNotice={notice} onClose={() => { setError(''); setTailoringJob(null) }} onSaveCV={saveTailoredCV} onUseCoverLetter={useTailoredCoverLetter} />}
     </div>
   )
 }
@@ -1006,8 +1118,8 @@ function BoardView({ jobs, cvs, busy, onEdit, onStatus, onCV }: { jobs: Job[]; c
   )
 }
 
-function ApplicationsView({ jobs, cvs, sends, total, search, filter, busy, onSearch, onFilter, onEdit, onDelete, onDownloadCV }: { jobs: Job[]; cvs: CV[]; sends: ApplicationSend[]; total: number; search: string; filter: 'all' | JobStatus; busy: boolean; onSearch: (value: string) => void; onFilter: (value: 'all' | JobStatus) => void; onEdit: (job: Job) => void; onDelete: (job: Job) => Promise<void>; onDownloadCV: (cv: CV) => Promise<void> }) {
-  return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>CV used</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => { const linkedCV = cvs.find((cv) => cv.id === job.cv_id); const lastSend = sends.find((send) => send.job_id === job.id && send.status === 'sent'); return <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{linkedCV ? <><strong>{linkedCV.name}</strong><span>{linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV'}</span>{linkedCV.storage_path && <button className="button ghost table-download" disabled={busy} onClick={() => void onDownloadCV(linkedCV)}>Download</button>}</> : <span>No CV linked</span>}{lastSend && <span className="sent-summary">Sent {formatDateTime(lastSend.sent_at)} to {lastSend.recipient}</span>}</td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr> })}</tbody></table></div>}</section>
+function ApplicationsView({ jobs, cvs, sends, total, search, filter, busy, onSearch, onFilter, onEdit, onTailor, onDelete, onDownloadCV }: { jobs: Job[]; cvs: CV[]; sends: ApplicationSend[]; total: number; search: string; filter: 'all' | JobStatus; busy: boolean; onSearch: (value: string) => void; onFilter: (value: 'all' | JobStatus) => void; onEdit: (job: Job) => void; onTailor: (job: Job) => void; onDelete: (job: Job) => Promise<void>; onDownloadCV: (cv: CV) => Promise<void> }) {
+  return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>CV used</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => { const linkedCV = cvs.find((cv) => cv.id === job.cv_id); const lastSend = sends.find((send) => send.job_id === job.id && send.status === 'sent'); return <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{linkedCV ? <><strong>{linkedCV.name}</strong><span>{linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV'}</span>{linkedCV.storage_path && <button className="button ghost table-download" disabled={busy} onClick={() => void onDownloadCV(linkedCV)}>Download</button>}</> : <span>No CV linked</span>}{lastSend && <span className="sent-summary">Sent {formatDateTime(lastSend.sent_at)} to {lastSend.recipient}</span>}</td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" disabled={busy} onClick={() => onTailor(job)}>Tailor CV</button><button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr> })}</tbody></table></div>}</section>
 }
 
 function RemindersView({ jobs, onEdit, onEnable }: { jobs: Job[]; onEdit: (job: Job) => void; onEnable: () => Promise<void> }) {

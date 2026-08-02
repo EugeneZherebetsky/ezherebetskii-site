@@ -33,8 +33,12 @@ This phase restores and improves:
 - duplicate protection for provider listings, including simultaneous saves from two devices
 - Google Calendar events for scheduled application follow-ups
 - Gmail sending with the linked private CV attached and immutable synchronized send history
+- local CV-to-job keyword matching and best-version ranking
+- protected AI-assisted CV and cover-letter drafting with strict structured output
+- editable tailored CV versions that preserve the original and link back to the application
+- a private per-user generation ledger and rolling 24-hour usage limit
 
-AI-assisted CV matching and tailoring follows after the Google workflow is verified.
+The next planned phase is final production acceptance testing and documentation cleanup.
 
 ## Local development
 
@@ -63,6 +67,14 @@ Calendar and Gmail use Google Identity Services' browser token model. The site s
 Google authorization expires periodically by design. Calendar or Gmail actions will ask you to reconnect when a fresh token is required.
 
 If Gmail accepts a message while the database is temporarily unavailable, Opportunity Desk keeps the message ID in a per-user browser retry queue. Use **Retry history sync** to record the existing message after connectivity returns; the retry never sends the email again.
+
+## AI tailoring setup
+
+Keyword matching runs entirely in the browser and does not use a paid API. The optional **Tailor with AI** action calls the protected `tailor-cv` Supabase Edge Function. It verifies the signed-in user, reads only that user's application and CV through row-level security, and keeps the OpenAI key on the server.
+
+Add `OPENAI_API_KEY` under **Supabase Dashboard → Edge Functions → Secrets** before using AI generation. Optional server-side settings are `OPENAI_MODEL` (defaults to `gpt-5.6-sol`), `AI_DAILY_LIMIT` (defaults to 10 requests per rolling 24 hours), and `ALLOWED_ORIGINS` (a comma-separated list of additional browser origins).
+
+The function sends requests with storage disabled and asks OpenAI for a strict JSON result. Every generated summary, bullet, and cover letter must still be checked against the original CV before use. Saving creates a new text CV version; it never overwrites the source CV.
 
 ## Verification
 
