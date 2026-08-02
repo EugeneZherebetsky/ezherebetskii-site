@@ -29,8 +29,10 @@ This phase restores and improves:
 - live CV library refresh across signed-in devices
 - tailored-company details and a synchronized CV link on each application
 - native board drag-and-drop for CV assignment, with a mobile and keyboard-friendly selector
+- live Remotive and Arbeitnow vacancy search with one-click synchronized saving
+- duplicate protection for provider listings, including simultaneous saves from two devices
 
-The schema is prepared for immutable email-send history. Live job search, Google integrations, and AI tailoring follow after the core tracker and CV workflow are verified.
+The schema is prepared for immutable email-send history. Google integrations and AI tailoring follow after the tracker, CV workflow, and keyless public job search are verified.
 
 ## Local development
 
@@ -42,6 +44,8 @@ npm run dev
 ```
 
 The service-role key and third-party API secrets must never be placed in the browser environment.
+
+The Find jobs view uses the public, keyless Remotive and Arbeitnow feeds. Every result opens the provider's original listing. Providers such as Adzuna that require private API credentials belong behind a server-side integration and are intentionally not called from the browser.
 
 ## Verification
 

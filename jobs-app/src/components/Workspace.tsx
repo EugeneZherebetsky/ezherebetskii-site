@@ -35,6 +35,8 @@ import {
 } from '../types'
 import { CVForm } from './CVForm'
 import { JobForm } from './JobForm'
+import { JobSearch } from './JobSearch'
+import type { JobSearchResult } from '../lib/jobSearch'
 
 const NAV_ITEMS: Array<{ view: AppView; label: string; symbol: string }> = [
   { view: 'dashboard', label: 'Dashboard', symbol: '◫' },
@@ -531,6 +533,46 @@ export function Workspace({ session }: WorkspaceProps) {
     setBusy(false)
   }
 
+  async function saveSearchResult(result: JobSearchResult) {
+    const alreadySaved = jobs.some((job) =>
+      (job.source === result.sourceLabel && job.external_job_id === result.externalId)
+      || job.job_url === result.url,
+    )
+    if (alreadySaved) {
+      setNotice('This vacancy is already saved in your tracker.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = draftToPayload({
+      ...EMPTY_JOB,
+      company: result.company,
+      role_title: result.title,
+      status: 'saved',
+      work_mode: result.remote ? 'remote' : 'unspecified',
+      location: result.location,
+      job_url: result.url,
+      source: result.sourceLabel,
+      salary_text: result.salary,
+      next_action: 'Review listing and decide whether to apply',
+      job_description: result.description,
+      external_job_id: result.externalId,
+    })
+    const { data, error: insertError } = await supabase
+      .from('jobs')
+      .insert({ ...payload, user_id: session.user.id })
+      .select('id')
+      .maybeSingle()
+
+    if (insertError?.code === '23505') setNotice('This vacancy was already saved on another device.')
+    else if (insertError) setError(insertError.message)
+    else if (!data) setError('The vacancy could not be saved. Please try again.')
+    else setNotice(`${result.title} at ${result.company} was saved to your tracker.`)
+    await loadWorkspace()
+    setBusy(false)
+  }
+
   async function deleteCV(cv: CV) {
     const linkedApplications = jobs.filter((job) => job.cv_id === cv.id).length
     const linkWarning = linkedApplications ? ` ${linkedApplications} linked application${linkedApplications === 1 ? '' : 's'} will keep their records but lose this CV link.` : ''
@@ -572,7 +614,6 @@ export function Workspace({ session }: WorkspaceProps) {
           {NAV_ITEMS.map((item) => (
             <button key={item.view} className={view === item.view ? 'nav-item active' : 'nav-item'} onClick={() => setView(item.view)}>
               <span aria-hidden="true">{item.symbol}</span>{item.label}
-              {item.view === 'search' && <small>next</small>}
             </button>
           ))}
         </nav>
@@ -599,7 +640,7 @@ export function Workspace({ session }: WorkspaceProps) {
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
               {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} onSave={saveSettings} onEnableNotifications={enableNotifications} />}
               {view === 'cvs' && <CVLibrary cvs={cvs} busy={busy} onAdd={() => { setError(''); setEditingCV('new') }} onEdit={(cv) => { setError(''); setEditingCV(cv) }} onDownload={downloadCV} onDelete={deleteCV} />}
-              {view === 'search' && <NextPhaseView title="Find jobs" message="Live job search will be added after the core tracker is verified. Public feeds will stay in the browser; private API keys will stay in Supabase." />}
+              {view === 'search' && <JobSearch jobs={jobs} busy={busy} onSave={saveSearchResult} />}
             </>
           )}
         </main>
@@ -710,8 +751,4 @@ function SettingsView({ settings, busy, onSave, onEnableNotifications }: { setti
   const [draft, setDraft] = useState<SettingsDraft>({ default_view: settings.default_view, reminders_enabled: settings.reminders_enabled, reminder_lead_hours: settings.reminder_lead_hours, timezone: settings.timezone })
   useEffect(() => setDraft({ default_view: settings.default_view, reminders_enabled: settings.reminders_enabled, reminder_lead_hours: settings.reminder_lead_hours, timezone: settings.timezone }), [settings])
   return <section className="workspace-card settings-form"><div><p className="eyebrow">Synchronized preferences</p><h2>Workspace settings</h2><p>These preferences follow your account to every device. Browser notification permission is still controlled separately by each device.</p></div><label>Start page<select value={draft.default_view} onChange={(event) => setDraft({ ...draft, default_view: event.target.value as DefaultView })}>{APP_VIEWS.filter((candidate): candidate is DefaultView => ['dashboard', 'board', 'applications', 'reminders', 'cvs'].includes(candidate)).map((candidate) => <option value={candidate} key={candidate}>{viewTitle(candidate)}</option>)}</select></label><label>Timezone<input value={draft.timezone} onChange={(event) => setDraft({ ...draft, timezone: event.target.value })} /></label><label>Reminder lead time<select value={draft.reminder_lead_hours} onChange={(event) => setDraft({ ...draft, reminder_lead_hours: Number(event.target.value) })}><option value={0}>At the due time</option><option value={1}>1 hour before</option><option value={6}>6 hours before</option><option value={24}>1 day before</option><option value={72}>3 days before</option><option value={168}>1 week before</option></select></label><label className="check-label"><input type="checkbox" checked={draft.reminders_enabled} onChange={(event) => setDraft({ ...draft, reminders_enabled: event.target.checked })} />Show reminders while Opportunity Desk is open</label><div className="button-row"><button className="button primary" disabled={busy} onClick={() => void onSave(draft)}>{busy ? 'Saving…' : 'Save settings'}</button><button className="button secondary" onClick={() => void onEnableNotifications()}>Allow browser notifications</button></div></section>
-}
-
-function NextPhaseView({ title, message }: { title: string; message: string }) {
-  return <section className="workspace-card empty-state next-phase"><span className="phase-pill">Prepared for phase 2</span><strong>{title}</strong><span>{message}</span></section>
 }
