@@ -123,6 +123,15 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .priority { background: transparent; border: 1px solid #d9e0e9; }
 .priority-high, .priority-urgent { border-color: #f4b8b1; color: var(--red); }
 
+.cv-drag-panel { display: grid; grid-template-columns: minmax(230px, .7fr) minmax(0, 1.3fr); align-items: center; gap: 22px; margin-bottom: 16px; padding: 18px 20px; }
+.cv-drag-panel .eyebrow { margin: 0 0 4px; }
+.cv-drag-panel h2 { margin: 0 0 4px; font-size: 19px; }
+.cv-drag-panel > div > span { color: var(--muted); font-size: 11px; }
+.cv-drag-list { display: flex; gap: 9px; overflow-x: auto; padding: 3px; }
+.cv-drag-chip { min-width: 170px; display: grid; gap: 3px; padding: 11px 12px; border: 1px solid #bcd0f5; border-radius: 11px; background: #eef4ff; cursor: grab; user-select: none; }
+.cv-drag-chip:active { cursor: grabbing; }
+.cv-drag-chip strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.cv-drag-chip span { overflow: hidden; color: var(--blue-dark); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .kanban { display: grid; grid-template-columns: repeat(5, minmax(230px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 10px; }
 .kanban-column { min-height: 520px; border: 1px solid var(--line); border-radius: 15px; background: #e9edf2; }
 .kanban-head { display: flex; align-items: center; justify-content: space-between; padding: 14px; }
@@ -130,11 +139,18 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .kanban-head span { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 99px; background: rgba(255,255,255,.7); font-size: 11px; }
 .kanban-cards { display: grid; align-content: start; gap: 9px; padding: 0 9px 9px; }
 .kanban-card { display: grid; gap: 12px; padding: 14px; border: 1px solid #dce2e9; border-radius: 12px; background: white; box-shadow: 0 5px 15px rgba(28,42,62,.06); }
+.kanban-card.cv-drop-active { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(47,103,216,.18); }
 .card-title { display: grid; gap: 4px; padding: 0; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .card-title strong { color: var(--ink); }
 .card-title span, .kanban-card > small { color: var(--muted); font-size: 11px; }
 .compact-select { gap: 4px; font-size: 10px; }
 .compact-select select { padding: 7px 8px; font-size: 11px; }
+.linked-cv { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid #c7d8f7; border-radius: 9px; background: #eef4ff; }
+.linked-cv strong { color: var(--blue-dark); font-size: 11px; }
+.linked-cv span { overflow: hidden; color: #58709a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.linked-cv.empty { border-style: dashed; background: #f8fafc; }
+.linked-cv.empty strong, .linked-cv.empty span { color: var(--muted); }
+.table-download { min-height: 28px; margin-top: 5px; padding: 4px 0; }
 
 .reminder-list { display: grid; }
 .reminder-list > button { display: grid; grid-template-columns: 180px 1fr auto; align-items: center; gap: 20px; padding: 18px 22px; border: 0; border-bottom: 1px solid #edf0f4; background: transparent; cursor: pointer; text-align: left; }
@@ -204,6 +220,7 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
   .controls { flex-direction: column; }
   .controls input, .controls select { min-width: 0; }
   .settings-grid { grid-template-columns: 1fr; }
+  .cv-drag-panel { grid-template-columns: 1fr; }
   .cv-grid { grid-template-columns: 1fr; padding: 12px; }
   .reminder-list > button { grid-template-columns: 1fr; gap: 7px; }
   .row-actions { justify-content: flex-start; }

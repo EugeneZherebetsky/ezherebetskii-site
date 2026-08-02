@@ -27,6 +27,8 @@ This phase restores and improves:
 - optimistic locking so concurrent edits are not silently lost
 - private CV file uploads, text-only CV versions, editing, download, and deletion
 - live CV library refresh across signed-in devices
+- tailored-company details and a synchronized CV link on each application
+- native board drag-and-drop for CV assignment, with a mobile and keyboard-friendly selector
 
 The schema is prepared for immutable email-send history. Live job search, Google integrations, and AI tailoring follow after the core tracker and CV workflow are verified.
 

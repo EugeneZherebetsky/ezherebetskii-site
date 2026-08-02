@@ -17,6 +17,7 @@ export function cvToDraft(cv: CV): CVDraft {
     target_role: cv.target_role ?? '',
     notes: cv.notes ?? '',
     plain_text: cv.plain_text ?? '',
+    tailored_company: cv.tailored_company ?? '',
   }
 }
 

@@ -63,6 +63,7 @@ export type Job = {
   email_recipient: string | null
   email_subject: string | null
   email_body: string | null
+  cv_id: string | null
   created_at: string
   updated_at: string
   version: number
@@ -90,6 +91,7 @@ export type JobDraft = {
   email_recipient: string
   email_subject: string
   email_body: string
+  cv_id: string
 }
 
 export type CV = {
@@ -103,6 +105,7 @@ export type CV = {
   mime_type: string | null
   size_bytes: number | null
   plain_text: string | null
+  tailored_company: string | null
   created_at: string
   updated_at: string
   version: number
@@ -114,6 +117,7 @@ export type CVDraft = {
   target_role: string
   notes: string
   plain_text: string
+  tailored_company: string
 }
 
 export type UserSettings = {
@@ -150,6 +154,7 @@ export const EMPTY_JOB: JobDraft = {
   email_recipient: '',
   email_subject: '',
   email_body: '',
+  cv_id: '',
 }
 
 export const EMPTY_CV: CVDraft = {
@@ -157,4 +162,5 @@ export const EMPTY_CV: CVDraft = {
   target_role: '',
   notes: '',
   plain_text: '',
+  tailored_company: '',
 }
