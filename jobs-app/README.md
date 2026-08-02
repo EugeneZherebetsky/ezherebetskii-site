@@ -35,7 +35,7 @@ This phase restores and improves:
 - Gmail sending with the linked private CV attached and immutable synchronized send history
 - local CV-to-job keyword matching and best-version ranking
 - protected AI-assisted CV and cover-letter drafting with strict structured output
-- editable tailored CV versions that preserve the original and link back to the application
+- editable tailored CV versions that retain the complete source CV, preserve the original version, and link back to the application
 - a private per-user generation ledger and rolling 24-hour usage limit
 
 The next planned phase is final production acceptance testing and documentation cleanup.

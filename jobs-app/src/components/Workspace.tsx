@@ -359,7 +359,7 @@ export function Workspace({ session }: WorkspaceProps) {
     if (!tailoringJob) return
     const job = tailoringJob
     const cvId = crypto.randomUUID()
-    const plainText = tailoredCVText(result)
+    const plainText = tailoredCVText(result, sourceCV.plain_text ?? '')
     setBusy(true)
     setError('')
     setNotice('')

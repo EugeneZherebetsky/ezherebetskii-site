@@ -5,6 +5,8 @@ const STOPWORDS = new Set(`a an the and or of to in for with on at by from as is
 their they it its he she his her them us i me my role job work team able experience skills required must should
 have has had who which what when where can may also other more most into out over under than then these those`.split(/\s+/))
 
+const SHORT_SKILLS = new Set(['ai', 'bi', 'c', 'c#', 'f#', 'go', 'hr', 'ml', 'qa', 'r', 'ui', 'ux'])
+
 export type MatchResult = {
   score: number
   matched: number
@@ -23,7 +25,11 @@ export type TailoringResult = {
 }
 
 function tokens(value: string) {
-  return (value.toLowerCase().match(/[\p{L}][\p{L}\p{N}+#.-]{2,}/gu) ?? []).filter((word) => !STOPWORDS.has(word))
+  return (value.toLowerCase().match(/(?:\.[\p{L}][\p{L}\p{N}+#./-]*|[\p{L}\p{N}][\p{L}\p{N}+#./-]*)/gu) ?? [])
+    .map((word) => word
+      .replace(/^[^\p{L}\p{N}.+#]+/gu, '')
+      .replace(/[^\p{L}\p{N}+#]+$/gu, ''))
+    .filter((word) => word && !STOPWORDS.has(word) && (word.length >= 3 || SHORT_SKILLS.has(word)))
 }
 
 export function matchCV(cvText: string, jobDescription: string): MatchResult {
@@ -95,16 +101,28 @@ export async function tailorCV(job: Job, cv: CV, jobDescription: string) {
   return data
 }
 
-export function tailoredCVText(result: Pick<TailoringResult, 'summary' | 'bullets'>) {
+export function tailoredCVText(result: Pick<TailoringResult, 'summary' | 'bullets'>, sourceCVText: string) {
   return [
     'PROFESSIONAL SUMMARY',
     result.summary.trim(),
     '',
     'TAILORED EXPERIENCE HIGHLIGHTS',
     ...result.bullets.map((bullet) => `• ${bullet.trim()}`),
+    '',
+    'FULL CV',
+    sourceCVText.trim(),
   ].join('\n').trim()
 }
 
 export function copyableTailoringText(result: Pick<TailoringResult, 'summary' | 'bullets' | 'cover_letter'>) {
-  return [tailoredCVText(result), '', 'COVER LETTER', result.cover_letter.trim()].join('\n')
+  return [
+    'PROFESSIONAL SUMMARY',
+    result.summary.trim(),
+    '',
+    'TAILORED EXPERIENCE HIGHLIGHTS',
+    ...result.bullets.map((bullet) => `• ${bullet.trim()}`),
+    '',
+    'COVER LETTER',
+    result.cover_letter.trim(),
+  ].join('\n').trim()
 }

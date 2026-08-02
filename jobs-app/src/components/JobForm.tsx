@@ -77,7 +77,7 @@ export function JobForm({ initial, title, busy, error, cvs, existing, googleConf
 
           <section className="ai-actions full" aria-label="CV matching and AI drafting">
             <div><strong>CV match and tailoring</strong><span>Compare your saved CV text with this job for free, then optionally create an AI-assisted CV and cover-letter draft.</span></div>
-            <button className="button secondary" disabled={busy || !existing} type="button" onClick={() => void onTailor(draft)}>Open tailoring tool</button>
+            <button className="button secondary" disabled={busy || !existing} type="button" onClick={(event) => { if (event.currentTarget.form?.reportValidity()) void onTailor(draft) }}>Open tailoring tool</button>
             {!existing && <small>Save the application once before opening the tailoring tool.</small>}
           </section>
 
