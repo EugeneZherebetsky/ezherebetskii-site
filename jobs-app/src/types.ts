@@ -120,18 +120,35 @@ export type CVDraft = {
   tailored_company: string
 }
 
+export type ApplicationSend = {
+  id: string
+  user_id: string
+  job_id: string
+  cv_id: string | null
+  sent_at: string
+  recipient: string
+  subject: string
+  provider: string
+  provider_message_id: string | null
+  status: 'sent' | 'failed'
+  details: Record<string, unknown>
+}
+
 export type UserSettings = {
   user_id: string
   default_view: DefaultView
   reminders_enabled: boolean
   reminder_lead_hours: number
   timezone: string
+  google_client_id: string | null
   created_at: string
   updated_at: string
   version: number
 }
 
-export type SettingsDraft = Pick<UserSettings, 'default_view' | 'reminders_enabled' | 'reminder_lead_hours' | 'timezone'>
+export type SettingsDraft = Pick<UserSettings, 'default_view' | 'reminders_enabled' | 'reminder_lead_hours' | 'timezone'> & {
+  google_client_id: string
+}
 
 export const EMPTY_JOB: JobDraft = {
   company: '',

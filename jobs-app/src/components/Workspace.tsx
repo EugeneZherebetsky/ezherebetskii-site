@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
+import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, hasGoogleAccess, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
 import {
   ACTIVE_STATUSES,
   BOARD_COLUMNS,
@@ -23,6 +24,7 @@ import {
   EMPTY_JOB,
   JOB_STATUSES,
   STATUS_LABELS,
+  type ApplicationSend,
   type AppView,
   type CV,
   type CVDraft,
@@ -53,6 +55,14 @@ function currentTimezone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 }
 
+function localDateInput() {
+  const today = new Date()
+  const year = today.getFullYear()
+  const month = String(today.getMonth() + 1).padStart(2, '0')
+  const day = String(today.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 function defaultSettings(userId: string): UserSettings {
   const now = new Date().toISOString()
   return {
@@ -61,6 +71,7 @@ function defaultSettings(userId: string): UserSettings {
     reminders_enabled: true,
     reminder_lead_hours: 24,
     timezone: currentTimezone(),
+    google_client_id: null,
     created_at: now,
     updated_at: now,
     version: 1,
@@ -116,9 +127,29 @@ function JobBadges({ job }: { job: Job }) {
 
 type WorkspaceProps = { session: Session }
 
+const PENDING_SEND_PREFIX = 'opportunity-desk:pending-gmail-history:'
+
+function pendingSendStorageKey(userId: string) {
+  return `${PENDING_SEND_PREFIX}${userId}`
+}
+
+function readPendingSend(userId: string): ApplicationSend | null {
+  try {
+    const raw = localStorage.getItem(pendingSendStorageKey(userId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<ApplicationSend>
+    if (parsed.user_id !== userId || parsed.status !== 'sent' || parsed.provider !== 'gmail' || !parsed.id || !parsed.job_id || !parsed.provider_message_id || !parsed.recipient || !parsed.subject || !parsed.sent_at || !parsed.details || typeof parsed.details !== 'object') return null
+    return parsed as ApplicationSend
+  }
+  catch {
+    return null
+  }
+}
+
 export function Workspace({ session }: WorkspaceProps) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [cvs, setCVs] = useState<CV[]>([])
+  const [applicationSends, setApplicationSends] = useState<ApplicationSend[]>([])
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [settingsPersisted, setSettingsPersisted] = useState(false)
   const [view, setView] = useState<AppView>('dashboard')
@@ -130,13 +161,36 @@ export function Workspace({ session }: WorkspaceProps) {
   const [filter, setFilter] = useState<'all' | JobStatus>('all')
   const [editing, setEditing] = useState<Job | 'new' | null>(null)
   const [editingCV, setEditingCV] = useState<CV | 'new' | null>(null)
+  const [googleConnected, setGoogleConnected] = useState(false)
+  const [pendingSendHistory, setPendingSendHistory] = useState<ApplicationSend | null>(() => readPendingSend(session.user.id))
   const initialViewSet = useRef(false)
 
+  function rememberPendingSend(record: ApplicationSend) {
+    setPendingSendHistory(record)
+    try {
+      localStorage.setItem(pendingSendStorageKey(session.user.id), JSON.stringify(record))
+    }
+    catch {
+      // The in-memory retry remains available when browser storage is unavailable.
+    }
+  }
+
+  function forgetPendingSend() {
+    setPendingSendHistory(null)
+    try {
+      localStorage.removeItem(pendingSendStorageKey(session.user.id))
+    }
+    catch {
+      // Nothing else is required when browser storage is unavailable.
+    }
+  }
+
   const loadWorkspace = useCallback(async () => {
-    const [jobsResult, cvsResult, settingsResult] = await Promise.all([
+    const [jobsResult, cvsResult, settingsResult, sendsResult] = await Promise.all([
       supabase.from('jobs').select('*').order('updated_at', { ascending: false }),
       supabase.from('cvs').select('*').order('updated_at', { ascending: false }),
       supabase.from('user_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
+      supabase.from('application_sends').select('*').order('sent_at', { ascending: false }).limit(500),
     ])
 
     if (jobsResult.error) setError(jobsResult.error.message)
@@ -144,6 +198,9 @@ export function Workspace({ session }: WorkspaceProps) {
 
     if (cvsResult.error) setError(cvsResult.error.message)
     else setCVs((cvsResult.data ?? []) as CV[])
+
+    if (sendsResult.error) setError(sendsResult.error.message)
+    else setApplicationSends((sendsResult.data ?? []) as ApplicationSend[])
 
     if (settingsResult.error) {
       setError(settingsResult.error.message)
@@ -177,6 +234,7 @@ export function Workspace({ session }: WorkspaceProps) {
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('broadcast', { event: 'cv_deleted' }, () => void loadWorkspace())
         .on('postgres_changes', { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'application_sends', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .subscribe()
     }
 
@@ -188,6 +246,14 @@ export function Workspace({ session }: WorkspaceProps) {
       if (channel) void supabase.removeChannel(channel)
     }
   }, [loadWorkspace, session.access_token, session.user.id])
+
+  useEffect(() => {
+    setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+  }, [session.user.id, settings?.google_client_id])
+
+  useEffect(() => {
+    if (pendingSendHistory && applicationSends.some((send) => send.id === pendingSendHistory.id)) forgetPendingSend()
+  }, [applicationSends, pendingSendHistory])
 
   useEffect(() => {
     if (!settings?.reminders_enabled || !('Notification' in window) || Notification.permission !== 'granted') return
@@ -272,6 +338,10 @@ export function Workspace({ session }: WorkspaceProps) {
   }
 
   async function deleteJob(job: Job) {
+    if (pendingSendHistory?.job_id === job.id) {
+      setError('Synchronize the pending Gmail send history before deleting this application.')
+      return
+    }
     if (!window.confirm(`Delete ${job.role_title} at ${job.company}? This cannot be undone.`)) return
     setBusy(true)
     const { error: deleteError } = await supabase.from('jobs').delete().eq('id', job.id)
@@ -286,9 +356,16 @@ export function Workspace({ session }: WorkspaceProps) {
   async function saveSettings(draft: SettingsDraft) {
     setBusy(true)
     setError('')
-    const basePayload = { ...draft, user_id: session.user.id }
+    const googleClientId = draft.google_client_id.trim()
+    if (googleClientId && !validGoogleClientId(googleClientId)) {
+      setError('The Google client ID must end in .apps.googleusercontent.com and match the ID from Google Cloud.')
+      setBusy(false)
+      return
+    }
+    const payload = { ...draft, google_client_id: googleClientId || null }
+    const basePayload = { ...payload, user_id: session.user.id }
     const result = settingsPersisted && settings
-      ? await supabase.from('user_settings').update(draft).eq('user_id', session.user.id).eq('version', settings.version).select('*').maybeSingle()
+      ? await supabase.from('user_settings').update(payload).eq('user_id', session.user.id).eq('version', settings.version).select('*').maybeSingle()
       : await supabase.from('user_settings').upsert(basePayload, { onConflict: 'user_id' }).select('*').maybeSingle()
 
     if (result.error) setError(result.error.message)
@@ -300,6 +377,219 @@ export function Workspace({ session }: WorkspaceProps) {
     }
     await loadWorkspace()
     setBusy(false)
+  }
+
+  async function connectGoogle(clientId: string) {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await requestGoogleAccess(session.user.id, clientId)
+      setGoogleConnected(true)
+      setNotice('Google is connected for this browser session. Save Settings to synchronize the public client ID.')
+    }
+    catch (caught) {
+      setGoogleConnected(false)
+      setError(caught instanceof Error ? caught.message : 'Google could not be connected.')
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  function googleClientId() {
+    const clientId = settings?.google_client_id?.trim() ?? ''
+    if (!clientId) throw new Error('Add and save your Google OAuth client ID in Settings first.')
+    return clientId
+  }
+
+  async function addToGoogleCalendar(draft: JobDraft) {
+    if (!editing || editing === 'new') return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
+      setGoogleConnected(true)
+      await createCalendarEvent(token, draft, settings?.timezone || currentTimezone())
+      setNotice('The follow-up was added to your primary Google Calendar. Save the application separately if you changed its fields.')
+    }
+    catch (caught) {
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+      setError(caught instanceof Error ? caught.message : 'The calendar event could not be created.')
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  async function cvEmailAttachment(cv: CV): Promise<EmailAttachment> {
+    if (cv.storage_path) {
+      const { data, error: downloadError } = await supabase.storage.from('cvs').download(cv.storage_path)
+      if (downloadError) throw downloadError
+      return {
+        filename: safeStorageFilename(cv.original_filename || `${cv.name}.pdf`),
+        mimeType: cv.mime_type || data.type || 'application/octet-stream',
+        base64: await blobToBase64(data),
+      }
+    }
+    if (!cv.plain_text) throw new Error('The selected CV has no file or text to attach.')
+    const textFile = new Blob([cv.plain_text], { type: 'text/plain;charset=utf-8' })
+    return {
+      filename: `${safeStorageFilename(cv.name)}.txt`,
+      mimeType: 'text/plain',
+      base64: await blobToBase64(textFile),
+    }
+  }
+
+  async function recordFailedSend(job: Job, draft: JobDraft, cv: CV | undefined, message: string) {
+    await supabase.from('application_sends').insert({
+      user_id: session.user.id,
+      job_id: job.id,
+      cv_id: cv?.id ?? null,
+      recipient: draft.email_recipient.trim(),
+      subject: draft.email_subject.trim(),
+      provider: 'gmail',
+      status: 'failed',
+      details: { error: message.slice(0, 300), cv_name: cv?.name ?? null },
+    })
+  }
+
+  async function synchronizeSuccessfulSend(record: ApplicationSend) {
+    const { error: historyError } = await supabase.from('application_sends').insert(record)
+    if (!historyError) return
+    if (historyError.code !== '23505') throw historyError
+
+    const { data: existing, error: lookupError } = await supabase
+      .from('application_sends')
+      .select('id, provider_message_id')
+      .eq('id', record.id)
+      .eq('user_id', session.user.id)
+      .maybeSingle()
+    if (lookupError) throw lookupError
+    if (!existing || existing.provider_message_id !== record.provider_message_id) throw historyError
+  }
+
+  async function retrySendHistory() {
+    if (!pendingSendHistory) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await synchronizeSuccessfulSend(pendingSendHistory)
+      forgetPendingSend()
+      setNotice('The existing Gmail message is now recorded in synchronized send history. No second email was sent.')
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setError(`The email was already sent, but its history still could not synchronize. Retry again when the connection is stable. ${caught instanceof Error ? caught.message : ''}`.trim())
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  async function sendApplicationEmail(draft: JobDraft) {
+    if (!editing || editing === 'new') return
+    if (pendingSendHistory) {
+      setError('Synchronize the previous Gmail send history before sending another email. Retrying history will not send a second message.')
+      return
+    }
+    const job = editing
+    const recipient = draft.email_recipient.trim()
+    const subject = draft.email_subject.trim()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      setError('Enter a valid email recipient before sending.')
+      return
+    }
+    if (!subject) {
+      setError('Enter an email subject before sending.')
+      return
+    }
+    const cv = draft.cv_id ? cvs.find((candidate) => candidate.id === draft.cv_id) : undefined
+    if (draft.cv_id && !cv) {
+      setError('The selected CV is no longer available. Reload the application and choose another CV.')
+      return
+    }
+    const attachmentDescription = cv ? ` with “${cv.name}” attached` : ' without a CV attachment'
+    if (!window.confirm(`Send this email to ${recipient}${attachmentDescription}? It will be sent from the Google account you authorize.`)) return
+
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
+      setGoogleConnected(true)
+      const attachment = cv ? await cvEmailAttachment(cv) : null
+      let gmailMessage: { id: string; threadId?: string }
+      try {
+        gmailMessage = await sendGmailMessage(token, buildRawEmail(recipient, subject, draft.email_body, attachment))
+      }
+      catch (sendError) {
+        const message = sendError instanceof Error ? sendError.message : 'Gmail could not send the message.'
+        await recordFailedSend(job, draft, cv, message)
+        throw sendError
+      }
+
+      const historyRecord: ApplicationSend = {
+        id: crypto.randomUUID(),
+        user_id: session.user.id,
+        job_id: job.id,
+        cv_id: cv?.id ?? null,
+        sent_at: new Date().toISOString(),
+        recipient,
+        subject,
+        provider: 'gmail',
+        provider_message_id: gmailMessage.id,
+        status: 'sent',
+        details: {
+          thread_id: gmailMessage.threadId ?? null,
+          cv_name: cv?.name ?? null,
+          attachment_filename: attachment?.filename ?? null,
+        },
+      }
+      rememberPendingSend(historyRecord)
+      let historySynchronized = false
+      try {
+        await synchronizeSuccessfulSend(historyRecord)
+        forgetPendingSend()
+        historySynchronized = true
+      }
+      catch {
+        // Keep the exact Gmail message ID in the retry queue; never resend the email.
+      }
+
+      const sentDraft: JobDraft = {
+        ...draft,
+        status: draft.status === 'saved' ? 'applied' : draft.status,
+        applied_at: draft.applied_at || localDateInput(),
+        email_recipient: recipient,
+        email_subject: subject,
+      }
+      const { data: updatedJob, error: updateError } = await supabase
+        .from('jobs')
+        .update(draftToPayload(sentDraft))
+        .eq('id', job.id)
+        .eq('version', job.version)
+        .select('id, version')
+        .maybeSingle()
+
+      const warnings: string[] = []
+      if (!historySynchronized) warnings.push('send history is waiting for you to retry synchronization')
+      if (updateError) warnings.push('the application record could not be updated')
+      else if (!updatedJob) warnings.push('the application changed on another device and was not overwritten')
+      setEditing(null)
+      setNotice(`Email sent through Gmail${warnings.length ? `, but ${warnings.join(' and ')}` : ' and recorded in send history'}.`)
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+      setError(caught instanceof Error ? caught.message : 'The application email could not be sent.')
+      await loadWorkspace()
+    }
+    finally {
+      setBusy(false)
+    }
   }
 
   function exportJson() {
@@ -604,6 +894,12 @@ export function Workspace({ session }: WorkspaceProps) {
     setNotice(permission === 'granted' ? 'Browser reminders are enabled on this device.' : 'Notification permission was not granted.')
   }
 
+  async function signOutWorkspace() {
+    clearGoogleAccess()
+    setGoogleConnected(false)
+    await supabase.auth.signOut()
+  }
+
   const openEditor = (job: Job) => { setError(''); setEditing(job) }
 
   return (
@@ -617,11 +913,11 @@ export function Workspace({ session }: WorkspaceProps) {
             </button>
           ))}
         </nav>
-        <div className="sidebar-account"><span>{session.user.email}</span><button className="button ghost" onClick={() => void supabase.auth.signOut()}>Sign out</button></div>
+        <div className="sidebar-account"><span>{session.user.email}</span><span>{googleConnected ? 'Google connected' : settings?.google_client_id ? 'Google ready' : 'Google not configured'}</span><button className="button ghost" onClick={() => void signOutWorkspace()}>Sign out</button></div>
       </aside>
 
       <div className="workspace-shell">
-        <header className="mobile-topbar"><strong>Opportunity Desk</strong><button className="button ghost" onClick={() => void supabase.auth.signOut()}>Sign out</button></header>
+        <header className="mobile-topbar"><strong>Opportunity Desk</strong><button className="button ghost" onClick={() => void signOutWorkspace()}>Sign out</button></header>
         <div className="mobile-nav" aria-label="Mobile navigation">{NAV_ITEMS.map((item) => <button key={item.view} className={view === item.view ? 'active' : ''} onClick={() => setView(item.view)}>{item.label}</button>)}</div>
         <main className="dashboard">
           <section className="page-head">
@@ -629,16 +925,17 @@ export function Workspace({ session }: WorkspaceProps) {
             <button className="button primary add-button" onClick={() => { setError(''); if (view === 'cvs') setEditingCV('new'); else setEditing('new') }}>{view === 'cvs' ? '+ Add CV' : '+ Add application'}</button>
           </section>
 
+          {pendingSendHistory && <div className="sync-retry-banner" role="alert"><span><strong>Email already sent; history pending</strong>The Gmail message to {pendingSendHistory.recipient} is saved in this browser for retry. This action records that same message and will not send it again.</span><button className="button secondary" disabled={busy} onClick={() => void retrySendHistory()}>{busy ? 'Retrying...' : 'Retry history sync'}</button></div>}
           {error && <div className="error-banner" role="alert">{error}</div>}
           {notice && <div className="notice-banner" role="status">{notice}</div>}
           {loading ? <div className="workspace-card empty-state">Loading your workspace…</div> : (
             <>
               {view === 'dashboard' && <DashboardView jobs={jobs} counts={counts} reminders={reminders} onEdit={openEditor} onViewAll={() => setView('applications')} />}
               {view === 'board' && <BoardView jobs={jobs} cvs={cvs} busy={busy} onEdit={openEditor} onStatus={changeStatus} onCV={changeJobCV} />}
-              {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onDelete={deleteJob} onDownloadCV={downloadCV} />}
+              {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} sends={applicationSends} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onDelete={deleteJob} onDownloadCV={downloadCV} />}
               {view === 'reminders' && <RemindersView jobs={reminders} onEdit={openEditor} onEnable={enableNotifications} />}
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
-              {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} onSave={saveSettings} onEnableNotifications={enableNotifications} />}
+              {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} googleConnected={googleConnected} onSave={saveSettings} onConnectGoogle={connectGoogle} onEnableNotifications={enableNotifications} />}
               {view === 'cvs' && <CVLibrary cvs={cvs} busy={busy} onAdd={() => { setError(''); setEditingCV('new') }} onEdit={(cv) => { setError(''); setEditingCV(cv) }} onDownload={downloadCV} onDelete={deleteCV} />}
               {view === 'search' && <JobSearch jobs={jobs} busy={busy} onSave={saveSearchResult} />}
             </>
@@ -646,7 +943,7 @@ export function Workspace({ session }: WorkspaceProps) {
         </main>
       </div>
 
-      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} />}
+      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
     </div>
   )
@@ -709,8 +1006,8 @@ function BoardView({ jobs, cvs, busy, onEdit, onStatus, onCV }: { jobs: Job[]; c
   )
 }
 
-function ApplicationsView({ jobs, cvs, total, search, filter, busy, onSearch, onFilter, onEdit, onDelete, onDownloadCV }: { jobs: Job[]; cvs: CV[]; total: number; search: string; filter: 'all' | JobStatus; busy: boolean; onSearch: (value: string) => void; onFilter: (value: 'all' | JobStatus) => void; onEdit: (job: Job) => void; onDelete: (job: Job) => Promise<void>; onDownloadCV: (cv: CV) => Promise<void> }) {
-  return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>CV used</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => { const linkedCV = cvs.find((cv) => cv.id === job.cv_id); return <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{linkedCV ? <><strong>{linkedCV.name}</strong><span>{linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV'}</span>{linkedCV.storage_path && <button className="button ghost table-download" disabled={busy} onClick={() => void onDownloadCV(linkedCV)}>Download</button>}</> : <span>No CV linked</span>}</td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr> })}</tbody></table></div>}</section>
+function ApplicationsView({ jobs, cvs, sends, total, search, filter, busy, onSearch, onFilter, onEdit, onDelete, onDownloadCV }: { jobs: Job[]; cvs: CV[]; sends: ApplicationSend[]; total: number; search: string; filter: 'all' | JobStatus; busy: boolean; onSearch: (value: string) => void; onFilter: (value: 'all' | JobStatus) => void; onEdit: (job: Job) => void; onDelete: (job: Job) => Promise<void>; onDownloadCV: (cv: CV) => Promise<void> }) {
+  return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>CV used</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => { const linkedCV = cvs.find((cv) => cv.id === job.cv_id); const lastSend = sends.find((send) => send.job_id === job.id && send.status === 'sent'); return <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{linkedCV ? <><strong>{linkedCV.name}</strong><span>{linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV'}</span>{linkedCV.storage_path && <button className="button ghost table-download" disabled={busy} onClick={() => void onDownloadCV(linkedCV)}>Download</button>}</> : <span>No CV linked</span>}{lastSend && <span className="sent-summary">Sent {formatDateTime(lastSend.sent_at)} to {lastSend.recipient}</span>}</td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr> })}</tbody></table></div>}</section>
 }
 
 function RemindersView({ jobs, onEdit, onEnable }: { jobs: Job[]; onEdit: (job: Job) => void; onEnable: () => Promise<void> }) {
@@ -747,8 +1044,21 @@ function BackupView({ jobs, busy, onJson, onCsv, onImport }: { jobs: Job[]; busy
   return <div className="settings-grid"><section className="workspace-card panel"><p className="eyebrow">Portable application copy</p><h2>Export applications</h2><p>Download application records as a restorable JSON file or a CSV spreadsheet. CV files remain protected in the separate private library.</p><div className="button-row"><button className="button primary" onClick={onJson}>Download JSON backup</button><button className="button secondary" onClick={onCsv}>Download CSV</button></div></section><section className="workspace-card panel"><p className="eyebrow">Restore applications</p><h2>Import a backup</h2><p>Import a JSON file created by this version of Opportunity Desk. Matching application IDs are updated; new ones are added.</p><label className={busy ? 'button secondary file-button disabled' : 'button secondary file-button'}>{busy ? 'Importing…' : 'Choose JSON backup'}<input type="file" accept="application/json,.json" disabled={busy} onChange={(event) => void onImport(event)} /></label><small>{jobs.length} applications are currently synchronized.</small></section></div>
 }
 
-function SettingsView({ settings, busy, onSave, onEnableNotifications }: { settings: UserSettings; busy: boolean; onSave: (draft: SettingsDraft) => Promise<void>; onEnableNotifications: () => Promise<void> }) {
-  const [draft, setDraft] = useState<SettingsDraft>({ default_view: settings.default_view, reminders_enabled: settings.reminders_enabled, reminder_lead_hours: settings.reminder_lead_hours, timezone: settings.timezone })
-  useEffect(() => setDraft({ default_view: settings.default_view, reminders_enabled: settings.reminders_enabled, reminder_lead_hours: settings.reminder_lead_hours, timezone: settings.timezone }), [settings])
-  return <section className="workspace-card settings-form"><div><p className="eyebrow">Synchronized preferences</p><h2>Workspace settings</h2><p>These preferences follow your account to every device. Browser notification permission is still controlled separately by each device.</p></div><label>Start page<select value={draft.default_view} onChange={(event) => setDraft({ ...draft, default_view: event.target.value as DefaultView })}>{APP_VIEWS.filter((candidate): candidate is DefaultView => ['dashboard', 'board', 'applications', 'reminders', 'cvs'].includes(candidate)).map((candidate) => <option value={candidate} key={candidate}>{viewTitle(candidate)}</option>)}</select></label><label>Timezone<input value={draft.timezone} onChange={(event) => setDraft({ ...draft, timezone: event.target.value })} /></label><label>Reminder lead time<select value={draft.reminder_lead_hours} onChange={(event) => setDraft({ ...draft, reminder_lead_hours: Number(event.target.value) })}><option value={0}>At the due time</option><option value={1}>1 hour before</option><option value={6}>6 hours before</option><option value={24}>1 day before</option><option value={72}>3 days before</option><option value={168}>1 week before</option></select></label><label className="check-label"><input type="checkbox" checked={draft.reminders_enabled} onChange={(event) => setDraft({ ...draft, reminders_enabled: event.target.checked })} />Show reminders while Opportunity Desk is open</label><div className="button-row"><button className="button primary" disabled={busy} onClick={() => void onSave(draft)}>{busy ? 'Saving…' : 'Save settings'}</button><button className="button secondary" onClick={() => void onEnableNotifications()}>Allow browser notifications</button></div></section>
+function SettingsView({ settings, busy, googleConnected, onSave, onConnectGoogle, onEnableNotifications }: { settings: UserSettings; busy: boolean; googleConnected: boolean; onSave: (draft: SettingsDraft) => Promise<void>; onConnectGoogle: (clientId: string) => Promise<void>; onEnableNotifications: () => Promise<void> }) {
+  const settingsDraft = (value: UserSettings): SettingsDraft => ({ default_view: value.default_view, reminders_enabled: value.reminders_enabled, reminder_lead_hours: value.reminder_lead_hours, timezone: value.timezone, google_client_id: value.google_client_id ?? '' })
+  const [draft, setDraft] = useState<SettingsDraft>(() => settingsDraft(settings))
+  useEffect(() => setDraft(settingsDraft(settings)), [settings])
+  return (
+    <section className="workspace-card settings-form">
+      <div><p className="eyebrow">Synchronized preferences</p><h2>Workspace settings</h2><p>These preferences follow your account to every device. Browser notification permission and short-lived Google access are still approved separately in each browser.</p></div>
+      <label>Start page<select value={draft.default_view} onChange={(event) => setDraft({ ...draft, default_view: event.target.value as DefaultView })}>{APP_VIEWS.filter((candidate): candidate is DefaultView => ['dashboard', 'board', 'applications', 'reminders', 'cvs'].includes(candidate)).map((candidate) => <option value={candidate} key={candidate}>{viewTitle(candidate)}</option>)}</select></label>
+      <label>Timezone<input value={draft.timezone} onChange={(event) => setDraft({ ...draft, timezone: event.target.value })} /></label>
+      <label>Reminder lead time<select value={draft.reminder_lead_hours} onChange={(event) => setDraft({ ...draft, reminder_lead_hours: Number(event.target.value) })}><option value={0}>At the due time</option><option value={1}>1 hour before</option><option value={6}>6 hours before</option><option value={24}>1 day before</option><option value={72}>3 days before</option><option value={168}>1 week before</option></select></label>
+      <label className="check-label"><input type="checkbox" checked={draft.reminders_enabled} onChange={(event) => setDraft({ ...draft, reminders_enabled: event.target.checked })} />Show reminders while Opportunity Desk is open</label>
+      <div className="settings-divider"><p className="eyebrow">Google Calendar and Gmail</p><h3>{googleConnected ? 'Connected for this session' : 'Connection ready when you are'}</h3><p>The OAuth client ID is public and synchronizes with your account. Google access tokens are short-lived and stay only in this browser's memory.</p></div>
+      <label>Google OAuth client ID<input value={draft.google_client_id} onChange={(event) => setDraft({ ...draft, google_client_id: event.target.value })} placeholder="123456789-example.apps.googleusercontent.com" /><small>Enable the Google Calendar API and Gmail API, then use a Web application client whose authorized JavaScript origin includes this site.</small></label>
+      <details className="setup-guide"><summary>Google Cloud setup</summary><ol><li>Create or open a project in <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer">Google Cloud Console</a>.</li><li>Enable Google Calendar API and Gmail API.</li><li>Configure the OAuth consent screen and add your Google address as a test user if the app is in testing.</li><li>Create a Web application OAuth client and add <code>{window.location.origin}</code> as an authorized JavaScript origin.</li><li>Paste the client ID above, save settings, and connect Google.</li></ol></details>
+      <div className="button-row"><button className="button primary" disabled={busy} onClick={() => void onSave(draft)}>{busy ? 'Saving…' : 'Save settings'}</button><button className="button secondary" disabled={busy || !draft.google_client_id.trim()} onClick={() => void onConnectGoogle(draft.google_client_id)}>{googleConnected ? 'Reconnect Google' : 'Connect Google'}</button><button className="button secondary" onClick={() => void onEnableNotifications()}>Allow browser notifications</button></div>
+    </section>
+  )
 }

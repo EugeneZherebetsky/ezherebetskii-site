@@ -73,6 +73,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); box-shado
 .error-banner, .notice-banner { margin-bottom: 16px; padding: 12px 14px; border-radius: 11px; font-size: 13px; }
 .error-banner { background: #fff0ee; color: var(--red); }
 .notice-banner { background: #eaf8f1; color: #096a48; }
+.sync-retry-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; padding: 13px 14px; border: 1px solid #f2cf84; border-radius: 11px; background: #fff8e8; color: #76510c; }
+.sync-retry-banner > span { display: grid; gap: 3px; font-size: 12px; line-height: 1.45; }
+.sync-retry-banner .button { flex: none; }
 
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; margin-bottom: 18px; }
 .metrics article { min-height: 118px; display: flex; flex-direction: column; justify-content: space-between; padding: 19px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); box-shadow: 0 8px 26px rgba(26,38,57,.04); }
@@ -151,6 +154,7 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .linked-cv.empty { border-style: dashed; background: #f8fafc; }
 .linked-cv.empty strong, .linked-cv.empty span { color: var(--muted); }
 .table-download { min-height: 28px; margin-top: 5px; padding: 4px 0; }
+.sent-summary { color: var(--green); font-size: 10px; line-height: 1.4; }
 
 .job-search-view { display: grid; gap: 16px; }
 .job-search-panel { padding: 24px; }
@@ -193,6 +197,18 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .cv-preview { display: -webkit-box; overflow: hidden; padding: 11px; border-radius: 9px; background: #f6f8fb; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
 .cv-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: auto; padding-top: 3px; }
 .job-form label small { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.45; }
+.google-actions { display: grid; gap: 10px; padding: 15px; border: 1px solid #c7d8f7; border-radius: 12px; background: #f5f8ff; }
+.google-actions > div:first-child { display: grid; gap: 4px; }
+.google-actions > div:first-child strong { font-size: 13px; }
+.google-actions > div:first-child span, .google-actions > small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.google-actions .button-row { margin-top: 0; }
+.send-history { display: grid; gap: 8px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; }
+.send-history > strong { font-size: 13px; }
+.send-history > div { display: grid; gap: 3px; padding-left: 10px; border-left: 3px solid var(--green); }
+.send-history > div.failed { border-left-color: var(--red); }
+.send-history span { color: var(--green); font-size: 11px; font-weight: 750; }
+.send-history .failed span { color: var(--red); }
+.send-history small { overflow-wrap: anywhere; }
 
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .settings-grid p, .settings-form p { color: var(--muted); line-height: 1.6; }
@@ -200,6 +216,15 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .file-button { width: fit-content; margin-top: 18px; }
 .file-button input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
 .settings-form { max-width: 760px; display: grid; gap: 19px; padding: 25px; }
+.settings-divider { margin-top: 4px; padding-top: 18px; border-top: 1px solid var(--line); }
+.settings-divider .eyebrow { margin-bottom: 5px; }
+.settings-divider h3 { margin: 0 0 7px; font-size: 18px; }
+.settings-form label > small { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.5; }
+.setup-guide { padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: #f8fafc; }
+.setup-guide summary { cursor: pointer; font-size: 12px; font-weight: 750; }
+.setup-guide ol { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.setup-guide a { color: var(--blue); }
+.setup-guide code { overflow-wrap: anywhere; }
 .check-label { display: flex; align-items: center; gap: 10px; }
 .check-label input { width: 17px; height: 17px; }
 .next-phase { min-height: 360px; }
@@ -245,6 +270,8 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
   .cv-grid { grid-template-columns: 1fr; padding: 12px; }
   .reminder-list > button { grid-template-columns: 1fr; gap: 7px; }
   .row-actions { justify-content: flex-start; }
+  .sync-retry-banner { align-items: stretch; flex-direction: column; }
+  .sync-retry-banner .button { width: 100%; }
 }
 
 @media (max-width: 560px) {
