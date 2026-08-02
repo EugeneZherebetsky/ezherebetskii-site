@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
-import type { Session } from '@supabase/supabase-js'
+import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
 import {
@@ -162,14 +162,30 @@ export function Workspace({ session }: WorkspaceProps) {
 
   useEffect(() => {
     void loadWorkspace()
-    const channel = supabase
-      .channel(`opportunity-desk-${session.user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
-      .subscribe()
-    return () => { void supabase.removeChannel(channel) }
-  }, [loadWorkspace, session.user.id])
+    let disposed = false
+    let channel: RealtimeChannel | null = null
+
+    async function subscribe() {
+      await supabase.realtime.setAuth(session.access_token)
+      if (disposed) return
+      channel = supabase
+        .channel(`opportunity-desk:${session.user.id}`, { config: { private: true } })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('broadcast', { event: 'cv_deleted' }, () => void loadWorkspace())
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .subscribe()
+    }
+
+    void subscribe().catch(() => {
+      if (!disposed) setError('Live synchronization could not connect. Your saved data is still available; reload to retry.')
+    })
+    return () => {
+      disposed = true
+      if (channel) void supabase.removeChannel(channel)
+    }
+  }, [loadWorkspace, session.access_token, session.user.id])
 
   useEffect(() => {
     if (!settings?.reminders_enabled || !('Notification' in window) || Notification.permission !== 'granted') return
@@ -391,6 +407,7 @@ export function Workspace({ session }: WorkspaceProps) {
     const recordBeingEdited = editingCV
     const cvId = recordBeingEdited === 'new' ? crypto.randomUUID() : recordBeingEdited.id
     let uploadedPath: string | null = null
+    let uploadCompleted = false
     setBusy(true)
     setError('')
     setNotice('')
@@ -402,13 +419,14 @@ export function Workspace({ session }: WorkspaceProps) {
       if (file) {
         const { extension, mimeType } = validateCVFile(file)
         if (extension === 'txt' && !plainText) plainText = (await file.text()).trim() || null
-        uploadedPath = `${session.user.id}/${cvId}/${Date.now()}-${safeStorageFilename(file.name)}`
+        uploadedPath = `${session.user.id}/${cvId}/${crypto.randomUUID()}-${safeStorageFilename(file.name)}`
         const { error: uploadError } = await supabase.storage.from('cvs').upload(uploadedPath, file, {
           cacheControl: '3600',
           contentType: mimeType,
           upsert: false,
         })
         if (uploadError) throw uploadError
+        uploadCompleted = true
         filePayload = {
           storage_path: uploadedPath,
           original_filename: file.name,
@@ -430,9 +448,10 @@ export function Workspace({ session }: WorkspaceProps) {
 
       if (result.error) throw result.error
       if (!result.data && recordBeingEdited !== 'new') {
-        if (uploadedPath) {
+        if (uploadedPath && uploadCompleted) {
           await supabase.storage.from('cvs').remove([uploadedPath])
           uploadedPath = null
+          uploadCompleted = false
         }
         const { data: latest, error: latestError } = await supabase.from('cvs').select('version').eq('id', recordBeingEdited.id).maybeSingle()
         if (latestError) throw latestError
@@ -451,11 +470,12 @@ export function Workspace({ session }: WorkspaceProps) {
         if (cleanupError) cleanupWarning = ' The older file could not be removed automatically.'
       }
       uploadedPath = null
+      uploadCompleted = false
       setEditingCV(null)
       setNotice(`CV saved and synchronized.${cleanupWarning}`)
       await loadWorkspace()
     } catch (caught) {
-      if (uploadedPath) await supabase.storage.from('cvs').remove([uploadedPath])
+      if (uploadedPath && uploadCompleted) await supabase.storage.from('cvs').remove([uploadedPath])
       setError(caught instanceof Error ? caught.message : 'The CV could not be saved.')
     } finally {
       setBusy(false)
