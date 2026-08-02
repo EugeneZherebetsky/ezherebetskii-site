@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
@@ -383,6 +383,7 @@ export function Workspace({ session }: WorkspaceProps) {
             email_recipient: job.email_recipient ?? '',
             email_subject: job.email_subject ?? '',
             email_body: job.email_body ?? '',
+            cv_id: job.cv_id && cvs.some((cv) => cv.id === job.cv_id) ? job.cv_id : '',
           }),
           data: job.data ?? {},
         }
@@ -440,6 +441,7 @@ export function Workspace({ session }: WorkspaceProps) {
         target_role: draft.target_role.trim() || null,
         notes: draft.notes.trim() || null,
         plain_text: plainText,
+        tailored_company: draft.tailored_company.trim() || null,
         ...filePayload,
       }
       const result = recordBeingEdited === 'new'
@@ -505,8 +507,34 @@ export function Workspace({ session }: WorkspaceProps) {
     setBusy(false)
   }
 
+  async function changeJobCV(job: Job, cvId: string | null) {
+    if (cvId === job.cv_id) return
+    if (cvId && !cvs.some((cv) => cv.id === cvId)) {
+      setError('That CV is no longer available. The latest library has been loaded.')
+      await loadWorkspace()
+      return
+    }
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: updateError } = await supabase
+      .from('jobs')
+      .update({ cv_id: cvId })
+      .eq('id', job.id)
+      .eq('version', job.version)
+      .select('id')
+      .maybeSingle()
+    if (updateError) setError(updateError.message)
+    else if (!data) setError('This application changed on another device. The latest version has been loaded; please link the CV again.')
+    else setNotice(cvId ? 'CV linked to the application and synchronized.' : 'CV link removed from the application.')
+    await loadWorkspace()
+    setBusy(false)
+  }
+
   async function deleteCV(cv: CV) {
-    if (!window.confirm(`Delete ${cv.name}? This removes its saved file and cannot be undone.`)) return
+    const linkedApplications = jobs.filter((job) => job.cv_id === cv.id).length
+    const linkWarning = linkedApplications ? ` ${linkedApplications} linked application${linkedApplications === 1 ? '' : 's'} will keep their records but lose this CV link.` : ''
+    if (!window.confirm(`Delete ${cv.name}? This removes its saved file and cannot be undone.${linkWarning}`)) return
     setBusy(true)
     setError('')
     setNotice('')
@@ -565,8 +593,8 @@ export function Workspace({ session }: WorkspaceProps) {
           {loading ? <div className="workspace-card empty-state">Loading your workspace…</div> : (
             <>
               {view === 'dashboard' && <DashboardView jobs={jobs} counts={counts} reminders={reminders} onEdit={openEditor} onViewAll={() => setView('applications')} />}
-              {view === 'board' && <BoardView jobs={jobs} busy={busy} onEdit={openEditor} onStatus={changeStatus} />}
-              {view === 'applications' && <ApplicationsView jobs={visibleJobs} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onDelete={deleteJob} />}
+              {view === 'board' && <BoardView jobs={jobs} cvs={cvs} busy={busy} onEdit={openEditor} onStatus={changeStatus} onCV={changeJobCV} />}
+              {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onDelete={deleteJob} onDownloadCV={downloadCV} />}
               {view === 'reminders' && <RemindersView jobs={reminders} onEdit={openEditor} onEnable={enableNotifications} />}
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
               {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} onSave={saveSettings} onEnableNotifications={enableNotifications} />}
@@ -577,7 +605,7 @@ export function Workspace({ session }: WorkspaceProps) {
         </main>
       </div>
 
-      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} />}
+      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
     </div>
   )
@@ -607,12 +635,41 @@ function DashboardView({ jobs, counts, reminders, onEdit, onViewAll }: { jobs: J
   )
 }
 
-function BoardView({ jobs, busy, onEdit, onStatus }: { jobs: Job[]; busy: boolean; onEdit: (job: Job) => void; onStatus: (job: Job, status: JobStatus) => Promise<void> }) {
-  return <section className="kanban" aria-label="Application board">{BOARD_COLUMNS.map((column) => { const columnJobs = jobs.filter((job) => column.statuses.includes(job.status)); return <div className="kanban-column" key={column.title}><div className="kanban-head"><strong>{column.title}</strong><span>{columnJobs.length}</span></div><div className="kanban-cards">{columnJobs.map((job) => <article className="kanban-card" key={job.id}><JobBadges job={job} /><button className="card-title" onClick={() => onEdit(job)}><strong>{job.role_title}</strong><span>{job.company}</span></button>{job.next_action_at && <small>{job.next_action || 'Next action'} · {relativeDueLabel(job.next_action_at)}</small>}<label className="compact-select">Move to<select disabled={busy} value={job.status} onChange={(event) => void onStatus(job, event.target.value as JobStatus)}>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></label></article>)}{columnJobs.length === 0 && <div className="column-empty">No applications</div>}</div></div> })}</section>
+function BoardView({ jobs, cvs, busy, onEdit, onStatus, onCV }: { jobs: Job[]; cvs: CV[]; busy: boolean; onEdit: (job: Job) => void; onStatus: (job: Job, status: JobStatus) => Promise<void>; onCV: (job: Job, cvId: string | null) => Promise<void> }) {
+  const [dragOverJobId, setDragOverJobId] = useState<string | null>(null)
+
+  function startCVDrag(event: DragEvent<HTMLElement>, cv: CV) {
+    event.dataTransfer.effectAllowed = 'link'
+    event.dataTransfer.setData('application/x-opportunity-desk-cv', cv.id)
+    event.dataTransfer.setData('text/plain', cv.id)
+  }
+
+  function dropCV(event: DragEvent<HTMLElement>, job: Job) {
+    event.preventDefault()
+    setDragOverJobId(null)
+    const cvId = event.dataTransfer.getData('application/x-opportunity-desk-cv') || event.dataTransfer.getData('text/plain')
+    if (cvs.some((cv) => cv.id === cvId)) void onCV(job, cvId)
+  }
+
+  return (
+    <>
+      <section className="cv-drag-panel workspace-card" aria-label="CVs available to link">
+        <div><p className="eyebrow">CV assignment</p><h2>Drag a CV onto an opportunity</h2><span>On phones or with a keyboard, use the CV selector inside each card.</span></div>
+        <div className="cv-drag-list">{cvs.map((cv) => <article className="cv-drag-chip" key={cv.id} draggable={!busy} onDragStart={(event) => startCVDrag(event, cv)} onDragEnd={() => setDragOverJobId(null)}><strong>{cv.name}</strong><span>{cv.tailored_company || cv.target_role || 'General CV'}</span></article>)}{cvs.length === 0 && <span className="compact-empty">Add a CV in the CV library before linking one.</span>}</div>
+      </section>
+      <section className="kanban" aria-label="Application board">{BOARD_COLUMNS.map((column) => {
+        const columnJobs = jobs.filter((job) => column.statuses.includes(job.status))
+        return <div className="kanban-column" key={column.title}><div className="kanban-head"><strong>{column.title}</strong><span>{columnJobs.length}</span></div><div className="kanban-cards">{columnJobs.map((job) => {
+          const linkedCV = cvs.find((cv) => cv.id === job.cv_id)
+          return <article className={dragOverJobId === job.id ? 'kanban-card cv-drop-active' : 'kanban-card'} key={job.id} onDragOver={(event) => { if (!busy && cvs.length) { event.preventDefault(); event.dataTransfer.dropEffect = 'link'; setDragOverJobId(job.id) } }} onDragLeave={() => setDragOverJobId((current) => current === job.id ? null : current)} onDrop={(event) => dropCV(event, job)}><JobBadges job={job} /><button className="card-title" onClick={() => onEdit(job)}><strong>{job.role_title}</strong><span>{job.company}</span></button>{job.next_action_at && <small>{job.next_action || 'Next action'} · {relativeDueLabel(job.next_action_at)}</small>}<div className={linkedCV ? 'linked-cv' : 'linked-cv empty'}><strong>{linkedCV ? linkedCV.name : 'Drop a CV here'}</strong><span>{linkedCV ? linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV' : 'or choose one below'}</span></div><label className="compact-select">CV used<select disabled={busy} value={job.cv_id ?? ''} onChange={(event) => void onCV(job, event.target.value || null)}><option value="">No CV linked</option>{cvs.map((cv) => <option key={cv.id} value={cv.id}>{cv.name}{cv.tailored_company ? ` — ${cv.tailored_company}` : ''}</option>)}</select></label><label className="compact-select">Move to<select disabled={busy} value={job.status} onChange={(event) => void onStatus(job, event.target.value as JobStatus)}>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></label></article>
+        })}{columnJobs.length === 0 && <div className="column-empty">No applications</div>}</div></div>
+      })}</section>
+    </>
+  )
 }
 
-function ApplicationsView({ jobs, total, search, filter, busy, onSearch, onFilter, onEdit, onDelete }: { jobs: Job[]; total: number; search: string; filter: 'all' | JobStatus; busy: boolean; onSearch: (value: string) => void; onFilter: (value: 'all' | JobStatus) => void; onEdit: (job: Job) => void; onDelete: (job: Job) => Promise<void> }) {
-  return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr>)}</tbody></table></div>}</section>
+function ApplicationsView({ jobs, cvs, total, search, filter, busy, onSearch, onFilter, onEdit, onDelete, onDownloadCV }: { jobs: Job[]; cvs: CV[]; total: number; search: string; filter: 'all' | JobStatus; busy: boolean; onSearch: (value: string) => void; onFilter: (value: 'all' | JobStatus) => void; onEdit: (job: Job) => void; onDelete: (job: Job) => Promise<void>; onDownloadCV: (cv: CV) => Promise<void> }) {
+  return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>CV used</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => { const linkedCV = cvs.find((cv) => cv.id === job.cv_id); return <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{linkedCV ? <><strong>{linkedCV.name}</strong><span>{linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV'}</span>{linkedCV.storage_path && <button className="button ghost table-download" disabled={busy} onClick={() => void onDownloadCV(linkedCV)}>Download</button>}</> : <span>No CV linked</span>}</td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr> })}</tbody></table></div>}</section>
 }
 
 function RemindersView({ jobs, onEdit, onEnable }: { jobs: Job[]; onEdit: (job: Job) => void; onEnable: () => Promise<void> }) {
@@ -624,16 +681,16 @@ function CVLibrary({ cvs, busy, onAdd, onEdit, onDownload, onDelete }: { cvs: CV
   const filteredCVs = useMemo(() => {
     const needle = search.trim().toLowerCase()
     if (!needle) return cvs
-    return cvs.filter((cv) => [cv.name, cv.target_role ?? '', cv.notes ?? '', cv.plain_text ?? ''].some((value) => value.toLowerCase().includes(needle)))
+    return cvs.filter((cv) => [cv.name, cv.tailored_company ?? '', cv.target_role ?? '', cv.notes ?? '', cv.plain_text ?? ''].some((value) => value.toLowerCase().includes(needle)))
   }, [cvs, search])
 
   return (
     <section className="workspace-card">
-      <div className="workspace-head"><div><p className="eyebrow">Secure document workspace</p><h2>{cvs.length} CV versions</h2></div><div className="controls"><input aria-label="Search CVs" placeholder="Search name, role, notes, or text" value={search} onChange={(event) => setSearch(event.target.value)} /></div></div>
+      <div className="workspace-head"><div><p className="eyebrow">Secure document workspace</p><h2>{cvs.length} CV versions</h2></div><div className="controls"><input aria-label="Search CVs" placeholder="Search name, company, role, notes, or text" value={search} onChange={(event) => setSearch(event.target.value)} /></div></div>
       {filteredCVs.length === 0 ? <div className="empty-state"><strong>{cvs.length ? 'No matching CVs' : 'Build your CV library'}</strong><span>{cvs.length ? 'Try a different search.' : 'Upload a document, paste a text version, or use both. Your private library will follow your account to every device.'}</span>{!cvs.length && <button className="button primary" onClick={onAdd}>Add your first CV</button>}</div> : (
         <div className="cv-grid">{filteredCVs.map((cv) => (
           <article className="cv-card" key={cv.id}>
-            <div className="cv-card-head"><span className="cv-file-mark" aria-hidden="true">CV</span><div><h3>{cv.name}</h3><p>{cv.target_role || 'General CV'}</p></div></div>
+            <div className="cv-card-head"><span className="cv-file-mark" aria-hidden="true">CV</span><div><h3>{cv.name}</h3><p>{cv.tailored_company ? `Tailored for ${cv.tailored_company}` : cv.target_role || 'General CV'}</p></div></div>
             <div className="cv-meta"><span>{cv.storage_path ? cv.original_filename || 'Stored file' : 'Text-only version'}</span>{cv.size_bytes != null && <span>{formatFileSize(cv.size_bytes)}</span>}<span>Updated {formatDateTime(cv.updated_at)}</span></div>
             {cv.notes && <p className="cv-notes">{cv.notes}</p>}
             {cv.plain_text && <p className="cv-preview">{cv.plain_text.slice(0, 180)}{cv.plain_text.length > 180 ? '…' : ''}</p>}

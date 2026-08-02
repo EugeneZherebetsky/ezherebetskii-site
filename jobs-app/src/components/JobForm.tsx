@@ -1,16 +1,17 @@
 import { useState } from 'react'
-import { JOB_STATUSES, PRIORITIES, STATUS_LABELS, WORK_MODES, type JobDraft, type JobPriority, type JobStatus, type WorkMode } from '../types'
+import { JOB_STATUSES, PRIORITIES, STATUS_LABELS, WORK_MODES, type CV, type JobDraft, type JobPriority, type JobStatus, type WorkMode } from '../types'
 
 type JobFormProps = {
   initial: JobDraft
   title: string
   busy: boolean
   error: string
+  cvs: CV[]
   onCancel: () => void
   onSave: (draft: JobDraft) => Promise<void>
 }
 
-export function JobForm({ initial, title, busy, error, onCancel, onSave }: JobFormProps) {
+export function JobForm({ initial, title, busy, error, cvs, onCancel, onSave }: JobFormProps) {
   const [draft, setDraft] = useState<JobDraft>(initial)
 
   function field<K extends keyof JobDraft>(key: K, value: JobDraft[K]) {
@@ -34,6 +35,7 @@ export function JobForm({ initial, title, busy, error, onCancel, onSave }: JobFo
           <label>Location<input value={draft.location} onChange={(event) => field('location', event.target.value)} /></label>
           <label>Job link<input type="url" value={draft.job_url} onChange={(event) => field('job_url', event.target.value)} placeholder="https://" /></label>
           <label>Source<input value={draft.source} onChange={(event) => field('source', event.target.value)} placeholder="LinkedIn, recruiter…" /></label>
+          <label>CV used<select value={draft.cv_id} onChange={(event) => field('cv_id', event.target.value)}><option value="">No CV linked</option>{cvs.map((cv) => <option key={cv.id} value={cv.id}>{cv.name}{cv.tailored_company ? ` — ${cv.tailored_company}` : ''}</option>)}</select></label>
           <label>Salary / package<input value={draft.salary_text} onChange={(event) => field('salary_text', event.target.value)} /></label>
           <label>Source reference<input value={draft.external_job_id} onChange={(event) => field('external_job_id', event.target.value)} placeholder="Optional job ID" /></label>
           <label className="full">Job description<textarea rows={6} value={draft.job_description} onChange={(event) => field('job_description', event.target.value)} /></label>

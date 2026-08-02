@@ -65,6 +65,7 @@ export function toDraft(job: Job): JobDraft {
     email_recipient: job.email_recipient ?? '',
     email_subject: job.email_subject ?? '',
     email_body: job.email_body ?? '',
+    cv_id: job.cv_id ?? '',
   }
 }
 
@@ -90,6 +91,7 @@ export function draftToPayload(draft: JobDraft) {
     email_recipient: clean(draft.email_recipient),
     email_subject: clean(draft.email_subject),
     email_body: clean(draft.email_body),
+    cv_id: clean(draft.cv_id),
   }
 }
 
@@ -141,7 +143,7 @@ export function jobsToCsv(jobs: Job[]) {
   const columns: Array<keyof Job> = [
     'company', 'role_title', 'status', 'priority', 'work_mode', 'location', 'job_url',
     'source', 'salary_text', 'contact_name', 'contact_email', 'applied_at', 'next_action',
-    'next_action_at', 'job_description', 'notes', 'email_recipient', 'email_subject', 'email_body',
+    'next_action_at', 'job_description', 'notes', 'cv_id', 'email_recipient', 'email_subject', 'email_body',
   ]
   return [
     columns.map(csvCell).join(','),
