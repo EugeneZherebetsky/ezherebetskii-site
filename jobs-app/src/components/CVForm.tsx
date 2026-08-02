@@ -43,10 +43,6 @@ export function CVForm({ initial, title, existingFilename, busy, error, onCancel
       setValidationError('Give this CV a clear name.')
       return
     }
-    if (!draft.tailored_company.trim()) {
-      setValidationError('Enter the company this CV was tailored for.')
-      return
-    }
     if (!file && !existingFilename && !draft.plain_text.trim()) {
       setValidationError('Add a CV file or paste the CV text.')
       return
@@ -61,7 +57,7 @@ export function CVForm({ initial, title, existingFilename, busy, error, onCancel
         <form className="job-form" onSubmit={(event) => void submit(event)}>
           <label>CV name<input required autoFocus value={draft.name} placeholder="Product Manager CV" onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
           <label>Target role<input value={draft.target_role} placeholder="Senior Product Manager" onChange={(event) => setDraft({ ...draft, target_role: event.target.value })} /></label>
-          <label className="full">Tailored for company<input required value={draft.tailored_company} placeholder="Company this CV was tailored for" onChange={(event) => setDraft({ ...draft, tailored_company: event.target.value })} /></label>
+          <label className="full">Tailored for company<input value={draft.tailored_company} placeholder="Optional company name" onChange={(event) => setDraft({ ...draft, tailored_company: event.target.value })} /><small>Leave this blank for a general CV.</small></label>
           <label className="full">CV file<input type="file" accept={CV_FILE_ACCEPT} disabled={busy} onChange={(event) => void chooseFile(event.target.files?.[0] ?? null)} /><small>{file ? `${file.name} will be uploaded.` : existingFilename ? `Current file: ${existingFilename}. Choose another file to replace it.` : 'PDF, DOC, DOCX, TXT, or RTF. Maximum 10 MB.'}</small></label>
           <label className="full">CV text<textarea rows={12} value={draft.plain_text} placeholder="Paste the CV text here to make it searchable and ready for later tailoring." onChange={(event) => setDraft({ ...draft, plain_text: event.target.value })} /><small>Text-only CVs are supported. TXT files are copied here automatically.</small></label>
           <label className="full">Notes<textarea rows={4} value={draft.notes} placeholder="When to use this version, strengths, or changes to make" onChange={(event) => setDraft({ ...draft, notes: event.target.value })} /></label>
