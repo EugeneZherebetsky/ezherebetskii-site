@@ -4,7 +4,7 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
 
 if (!supabaseUrl || !publishableKey) {
-  throw new Error('Supabase connection settings are missing.')
+  throw new Error('This service is temporarily unavailable. Please try again later.')
 }
 
 export const supabase = createClient(supabaseUrl, publishableKey, {

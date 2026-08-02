@@ -18,6 +18,24 @@ function clean(value: string) {
   return trimmed || null
 }
 
+function friendlySignInError(message: string) {
+  const normalized = message.toLowerCase()
+
+  if (normalized.includes('invalid login credentials')) {
+    return 'The email or password is incorrect.'
+  }
+
+  if (normalized.includes('email not confirmed')) {
+    return 'Please confirm your email before signing in.'
+  }
+
+  if (normalized.includes('rate limit') || normalized.includes('too many')) {
+    return 'Too many attempts. Please wait a moment and try again.'
+  }
+
+  return 'We could not sign you in. Please try again.'
+}
+
 function toDraft(job: Job): JobDraft {
   return {
     company: job.company,
@@ -46,7 +64,7 @@ function AuthScreen() {
     setBusy(true)
     setMessage('')
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    setMessage(error ? error.message : 'Signed in. Loading your applications…')
+    setMessage(error ? friendlySignInError(error.message) : 'Signed in. Loading your applications…')
     setBusy(false)
   }
 
@@ -61,7 +79,7 @@ function AuthScreen() {
       email,
       options: { emailRedirectTo: window.location.origin },
     })
-    setMessage(error ? error.message : 'A secure sign-in link has been sent to your email.')
+    setMessage(error ? 'We could not send the sign-in link. Please try again.' : 'A secure sign-in link has been sent to your email.')
     setBusy(false)
   }
 
