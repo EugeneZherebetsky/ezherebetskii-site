@@ -25,6 +25,8 @@ export type JobSearchResult = {
 
 type UnknownRecord = Record<string, unknown>
 const SEARCH_CACHE_MS = 10 * 60 * 1000
+const SEARCH_RESULT_LIMIT = 40
+const ARBEITNOW_API_URL = new URL('https://www.arbeitnow.com/api/job-board-api')
 const searchCache = new Map<string, { expiresAt: number; results: JobSearchResult[] }>()
 
 function record(value: unknown): UnknownRecord | null {
@@ -44,6 +46,15 @@ function stripHtml(value: unknown) {
 
 function stringList(value: unknown) {
   return Array.isArray(value) ? value.map(text).filter(Boolean) : []
+}
+
+function publicationDate(value: unknown) {
+  const rawValue = typeof value === 'number' && Number.isFinite(value) ? value : text(value)
+  if (rawValue === '') return ''
+  const date = typeof rawValue === 'number' || /^\d+$/.test(rawValue)
+    ? new Date(Number(rawValue) * 1000)
+    : new Date(rawValue)
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString()
 }
 
 function matchesTerms(value: string, query: string) {
@@ -117,7 +128,7 @@ function arbeitnowResult(value: unknown): JobSearchResult | null {
     description: stripHtml(job.description),
     url,
     salary: '',
-    publishedAt: text(job.created_at),
+    publishedAt: publicationDate(job.created_at),
     remote: job.remote === true,
     tags: [...new Set(tags)].slice(0, 5),
   }
@@ -136,13 +147,41 @@ async function searchRemotive(query: string, location: string, signal?: AbortSig
 }
 
 async function searchArbeitnow(query: string, location: string, signal?: AbortSignal) {
-  const payload = record(await fetchJson(new URL('https://www.arbeitnow.com/api/job-board-api'), signal))
-  const jobs = payload && Array.isArray(payload.data) ? payload.data : []
-  return jobs
-    .map(arbeitnowResult)
-    .filter((job): job is JobSearchResult => Boolean(job))
-    .filter((job) => matchesTerms([job.title, job.company, job.description, ...job.tags].join(' '), query) && matchesLocation(job.location, location))
-    .slice(0, 40)
+  const results: JobSearchResult[] = []
+  const resultKeys = new Set<string>()
+  const visitedPages = new Set<string>()
+  let pageUrl: URL | null = new URL(ARBEITNOW_API_URL)
+
+  while (pageUrl && results.length < SEARCH_RESULT_LIMIT) {
+    if (visitedPages.has(pageUrl.href)) throw new Error('Arbeitnow returned a pagination loop. Please try again later.')
+    visitedPages.add(pageUrl.href)
+
+    const payload = record(await fetchJson(pageUrl, signal))
+    const jobs = payload && Array.isArray(payload.data) ? payload.data : []
+    for (const value of jobs) {
+      const job = arbeitnowResult(value)
+      if (!job || resultKeys.has(job.key)) continue
+      if (!matchesTerms([job.title, job.company, job.description, ...job.tags].join(' '), query) || !matchesLocation(job.location, location)) continue
+      resultKeys.add(job.key)
+      results.push(job)
+      if (results.length === SEARCH_RESULT_LIMIT) break
+    }
+
+    const links = payload ? record(payload.links) : null
+    const nextLink = links ? text(links.next) : ''
+    if (!nextLink || results.length === SEARCH_RESULT_LIMIT) {
+      pageUrl = null
+      continue
+    }
+
+    const nextUrl = new URL(nextLink, pageUrl)
+    if (nextUrl.origin !== ARBEITNOW_API_URL.origin || nextUrl.pathname !== ARBEITNOW_API_URL.pathname) {
+      throw new Error('Arbeitnow returned an unexpected pagination link. Please try again later.')
+    }
+    pageUrl = nextUrl
+  }
+
+  return results
 }
 
 export async function searchLiveJobs(source: JobSearchSource, query: string, location: string, signal?: AbortSignal) {
