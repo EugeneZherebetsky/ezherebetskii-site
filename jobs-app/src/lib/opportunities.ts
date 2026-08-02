@@ -25,6 +25,7 @@ export const BOARD_COLUMNS: Array<{ title: string; statuses: JobStatus[] }> = [
   { title: 'Applied', statuses: ['applied'] },
   { title: 'Conversations', statuses: ['phone_screen', 'interviewing'] },
   { title: 'Final stages', statuses: ['assessment', 'final_round', 'offer'] },
+  { title: 'On hold', statuses: ['on_hold'] },
   { title: 'Complete', statuses: ['accepted', 'rejected', 'withdrawn', 'closed'] },
 ]
 
@@ -89,7 +90,6 @@ export function draftToPayload(draft: JobDraft) {
     email_recipient: clean(draft.email_recipient),
     email_subject: clean(draft.email_subject),
     email_body: clean(draft.email_body),
-    data: {},
   }
 }
 
