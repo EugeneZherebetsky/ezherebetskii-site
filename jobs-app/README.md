@@ -2,6 +2,8 @@
 
 Opportunity Desk is the private, synchronized job-search workspace served at `jobs.ezherebetskii.com`.
 
+For architecture, completed phases, migration guidance, review lessons, and the recommended roadmap, see [DEVELOPER.md](./DEVELOPER.md).
+
 ## Architecture
 
 The rebuild keeps the existing architecture:
