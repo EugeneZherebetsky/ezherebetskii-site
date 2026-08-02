@@ -127,6 +127,25 @@ function JobBadges({ job }: { job: Job }) {
 
 type WorkspaceProps = { session: Session }
 
+const PENDING_SEND_PREFIX = 'opportunity-desk:pending-gmail-history:'
+
+function pendingSendStorageKey(userId: string) {
+  return `${PENDING_SEND_PREFIX}${userId}`
+}
+
+function readPendingSend(userId: string): ApplicationSend | null {
+  try {
+    const raw = localStorage.getItem(pendingSendStorageKey(userId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<ApplicationSend>
+    if (parsed.user_id !== userId || parsed.status !== 'sent' || parsed.provider !== 'gmail' || !parsed.id || !parsed.job_id || !parsed.provider_message_id || !parsed.recipient || !parsed.subject || !parsed.sent_at || !parsed.details || typeof parsed.details !== 'object') return null
+    return parsed as ApplicationSend
+  }
+  catch {
+    return null
+  }
+}
+
 export function Workspace({ session }: WorkspaceProps) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [cvs, setCVs] = useState<CV[]>([])
@@ -143,7 +162,28 @@ export function Workspace({ session }: WorkspaceProps) {
   const [editing, setEditing] = useState<Job | 'new' | null>(null)
   const [editingCV, setEditingCV] = useState<CV | 'new' | null>(null)
   const [googleConnected, setGoogleConnected] = useState(false)
+  const [pendingSendHistory, setPendingSendHistory] = useState<ApplicationSend | null>(() => readPendingSend(session.user.id))
   const initialViewSet = useRef(false)
+
+  function rememberPendingSend(record: ApplicationSend) {
+    setPendingSendHistory(record)
+    try {
+      localStorage.setItem(pendingSendStorageKey(session.user.id), JSON.stringify(record))
+    }
+    catch {
+      // The in-memory retry remains available when browser storage is unavailable.
+    }
+  }
+
+  function forgetPendingSend() {
+    setPendingSendHistory(null)
+    try {
+      localStorage.removeItem(pendingSendStorageKey(session.user.id))
+    }
+    catch {
+      // Nothing else is required when browser storage is unavailable.
+    }
+  }
 
   const loadWorkspace = useCallback(async () => {
     const [jobsResult, cvsResult, settingsResult, sendsResult] = await Promise.all([
@@ -208,8 +248,12 @@ export function Workspace({ session }: WorkspaceProps) {
   }, [loadWorkspace, session.access_token, session.user.id])
 
   useEffect(() => {
-    setGoogleConnected(hasGoogleAccess(settings?.google_client_id))
-  }, [settings?.google_client_id])
+    setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+  }, [session.user.id, settings?.google_client_id])
+
+  useEffect(() => {
+    if (pendingSendHistory && applicationSends.some((send) => send.id === pendingSendHistory.id)) forgetPendingSend()
+  }, [applicationSends, pendingSendHistory])
 
   useEffect(() => {
     if (!settings?.reminders_enabled || !('Notification' in window) || Notification.permission !== 'granted') return
@@ -294,6 +338,10 @@ export function Workspace({ session }: WorkspaceProps) {
   }
 
   async function deleteJob(job: Job) {
+    if (pendingSendHistory?.job_id === job.id) {
+      setError('Synchronize the pending Gmail send history before deleting this application.')
+      return
+    }
     if (!window.confirm(`Delete ${job.role_title} at ${job.company}? This cannot be undone.`)) return
     setBusy(true)
     const { error: deleteError } = await supabase.from('jobs').delete().eq('id', job.id)
@@ -336,7 +384,7 @@ export function Workspace({ session }: WorkspaceProps) {
     setError('')
     setNotice('')
     try {
-      await requestGoogleAccess(clientId)
+      await requestGoogleAccess(session.user.id, clientId)
       setGoogleConnected(true)
       setNotice('Google is connected for this browser session. Save Settings to synchronize the public client ID.')
     }
@@ -361,13 +409,13 @@ export function Workspace({ session }: WorkspaceProps) {
     setError('')
     setNotice('')
     try {
-      const token = await requestGoogleAccess(googleClientId())
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
       setGoogleConnected(true)
       await createCalendarEvent(token, draft, settings?.timezone || currentTimezone())
       setNotice('The follow-up was added to your primary Google Calendar. Save the application separately if you changed its fields.')
     }
     catch (caught) {
-      setGoogleConnected(hasGoogleAccess(settings?.google_client_id))
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
       setError(caught instanceof Error ? caught.message : 'The calendar event could not be created.')
     }
     finally {
@@ -407,8 +455,46 @@ export function Workspace({ session }: WorkspaceProps) {
     })
   }
 
+  async function synchronizeSuccessfulSend(record: ApplicationSend) {
+    const { error: historyError } = await supabase.from('application_sends').insert(record)
+    if (!historyError) return
+    if (historyError.code !== '23505') throw historyError
+
+    const { data: existing, error: lookupError } = await supabase
+      .from('application_sends')
+      .select('id, provider_message_id')
+      .eq('id', record.id)
+      .eq('user_id', session.user.id)
+      .maybeSingle()
+    if (lookupError) throw lookupError
+    if (!existing || existing.provider_message_id !== record.provider_message_id) throw historyError
+  }
+
+  async function retrySendHistory() {
+    if (!pendingSendHistory) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await synchronizeSuccessfulSend(pendingSendHistory)
+      forgetPendingSend()
+      setNotice('The existing Gmail message is now recorded in synchronized send history. No second email was sent.')
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setError(`The email was already sent, but its history still could not synchronize. Retry again when the connection is stable. ${caught instanceof Error ? caught.message : ''}`.trim())
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
   async function sendApplicationEmail(draft: JobDraft) {
     if (!editing || editing === 'new') return
+    if (pendingSendHistory) {
+      setError('Synchronize the previous Gmail send history before sending another email. Retrying history will not send a second message.')
+      return
+    }
     const job = editing
     const recipient = draft.email_recipient.trim()
     const subject = draft.email_subject.trim()
@@ -432,7 +518,7 @@ export function Workspace({ session }: WorkspaceProps) {
     setError('')
     setNotice('')
     try {
-      const token = await requestGoogleAccess(googleClientId())
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
       setGoogleConnected(true)
       const attachment = cv ? await cvEmailAttachment(cv) : null
       let gmailMessage: { id: string; threadId?: string }
@@ -445,10 +531,12 @@ export function Workspace({ session }: WorkspaceProps) {
         throw sendError
       }
 
-      const { error: historyError } = await supabase.from('application_sends').insert({
+      const historyRecord: ApplicationSend = {
+        id: crypto.randomUUID(),
         user_id: session.user.id,
         job_id: job.id,
         cv_id: cv?.id ?? null,
+        sent_at: new Date().toISOString(),
         recipient,
         subject,
         provider: 'gmail',
@@ -459,7 +547,17 @@ export function Workspace({ session }: WorkspaceProps) {
           cv_name: cv?.name ?? null,
           attachment_filename: attachment?.filename ?? null,
         },
-      })
+      }
+      rememberPendingSend(historyRecord)
+      let historySynchronized = false
+      try {
+        await synchronizeSuccessfulSend(historyRecord)
+        forgetPendingSend()
+        historySynchronized = true
+      }
+      catch {
+        // Keep the exact Gmail message ID in the retry queue; never resend the email.
+      }
 
       const sentDraft: JobDraft = {
         ...draft,
@@ -477,7 +575,7 @@ export function Workspace({ session }: WorkspaceProps) {
         .maybeSingle()
 
       const warnings: string[] = []
-      if (historyError) warnings.push('send history could not be synchronized')
+      if (!historySynchronized) warnings.push('send history is waiting for you to retry synchronization')
       if (updateError) warnings.push('the application record could not be updated')
       else if (!updatedJob) warnings.push('the application changed on another device and was not overwritten')
       setEditing(null)
@@ -485,7 +583,7 @@ export function Workspace({ session }: WorkspaceProps) {
       await loadWorkspace()
     }
     catch (caught) {
-      setGoogleConnected(hasGoogleAccess(settings?.google_client_id))
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
       setError(caught instanceof Error ? caught.message : 'The application email could not be sent.')
       await loadWorkspace()
     }
@@ -796,6 +894,12 @@ export function Workspace({ session }: WorkspaceProps) {
     setNotice(permission === 'granted' ? 'Browser reminders are enabled on this device.' : 'Notification permission was not granted.')
   }
 
+  async function signOutWorkspace() {
+    clearGoogleAccess()
+    setGoogleConnected(false)
+    await supabase.auth.signOut()
+  }
+
   const openEditor = (job: Job) => { setError(''); setEditing(job) }
 
   return (
@@ -809,11 +913,11 @@ export function Workspace({ session }: WorkspaceProps) {
             </button>
           ))}
         </nav>
-        <div className="sidebar-account"><span>{session.user.email}</span><span>{googleConnected ? 'Google connected' : settings?.google_client_id ? 'Google ready' : 'Google not configured'}</span><button className="button ghost" onClick={() => { clearGoogleAccess(); void supabase.auth.signOut() }}>Sign out</button></div>
+        <div className="sidebar-account"><span>{session.user.email}</span><span>{googleConnected ? 'Google connected' : settings?.google_client_id ? 'Google ready' : 'Google not configured'}</span><button className="button ghost" onClick={() => void signOutWorkspace()}>Sign out</button></div>
       </aside>
 
       <div className="workspace-shell">
-        <header className="mobile-topbar"><strong>Opportunity Desk</strong><button className="button ghost" onClick={() => void supabase.auth.signOut()}>Sign out</button></header>
+        <header className="mobile-topbar"><strong>Opportunity Desk</strong><button className="button ghost" onClick={() => void signOutWorkspace()}>Sign out</button></header>
         <div className="mobile-nav" aria-label="Mobile navigation">{NAV_ITEMS.map((item) => <button key={item.view} className={view === item.view ? 'active' : ''} onClick={() => setView(item.view)}>{item.label}</button>)}</div>
         <main className="dashboard">
           <section className="page-head">
@@ -821,6 +925,7 @@ export function Workspace({ session }: WorkspaceProps) {
             <button className="button primary add-button" onClick={() => { setError(''); if (view === 'cvs') setEditingCV('new'); else setEditing('new') }}>{view === 'cvs' ? '+ Add CV' : '+ Add application'}</button>
           </section>
 
+          {pendingSendHistory && <div className="sync-retry-banner" role="alert"><span><strong>Email already sent; history pending</strong>The Gmail message to {pendingSendHistory.recipient} is saved in this browser for retry. This action records that same message and will not send it again.</span><button className="button secondary" disabled={busy} onClick={() => void retrySendHistory()}>{busy ? 'Retrying...' : 'Retry history sync'}</button></div>}
           {error && <div className="error-banner" role="alert">{error}</div>}
           {notice && <div className="notice-banner" role="status">{notice}</div>}
           {loading ? <div className="workspace-card empty-state">Loading your workspace…</div> : (
@@ -838,7 +943,7 @@ export function Workspace({ session }: WorkspaceProps) {
         </main>
       </div>
 
-      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} />}
+      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
     </div>
   )

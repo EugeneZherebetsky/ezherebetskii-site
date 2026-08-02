@@ -9,11 +9,13 @@ type JobFormProps = {
   cvs: CV[]
   existing: boolean
   googleConfigured: boolean
+  sendHistoryPending: boolean
   sendHistory: ApplicationSend[]
   onCancel: () => void
   onSave: (draft: JobDraft) => Promise<void>
   onCalendar: (draft: JobDraft) => Promise<void>
   onSend: (draft: JobDraft) => Promise<void>
+  onRetrySendHistory: () => Promise<void>
 }
 
 function withEmailDefaults(initial: JobDraft): JobDraft {
@@ -30,7 +32,7 @@ function sentAtLabel(value: string) {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
-export function JobForm({ initial, title, busy, error, cvs, existing, googleConfigured, sendHistory, onCancel, onSave, onCalendar, onSend }: JobFormProps) {
+export function JobForm({ initial, title, busy, error, cvs, existing, googleConfigured, sendHistoryPending, sendHistory, onCancel, onSave, onCalendar, onSend, onRetrySendHistory }: JobFormProps) {
   const [draft, setDraft] = useState<JobDraft>(() => withEmailDefaults(initial))
 
   function field<K extends keyof JobDraft>(key: K, value: JobDraft[K]) {
@@ -76,9 +78,11 @@ export function JobForm({ initial, title, busy, error, cvs, existing, googleConf
             <div><strong>Google actions</strong><span>{googleConfigured ? 'Google will ask for Calendar and Gmail permission when needed. Access stays in this browser session.' : 'Add your public Google OAuth client ID in Settings to enable these actions.'}</span></div>
             <div className="button-row">
               <button className="button secondary" disabled={busy || !existing || !googleConfigured || !draft.next_action_at} type="button" onClick={() => void onCalendar(draft)}>Add to Google Calendar</button>
-              <button className="button secondary" disabled={busy || !existing || !googleConfigured} type="button" onClick={() => void onSend(draft)}>Send CV via Gmail</button>
+              <button className="button secondary" disabled={busy || !existing || !googleConfigured || sendHistoryPending} type="button" onClick={() => void onSend(draft)}>Send CV via Gmail</button>
+              {sendHistoryPending && <button className="button secondary" disabled={busy} type="button" onClick={() => void onRetrySendHistory()}>Retry history sync</button>}
             </div>
             {!existing && <small>Save the application once before using Google actions.</small>}
+            {sendHistoryPending && <small>The previous email was already sent. Synchronize its history before sending another message; retrying does not resend it.</small>}
           </section>
 
           {sendHistory.length > 0 && <section className="send-history full"><strong>Send history</strong>{sendHistory.map((send) => <div key={send.id} className={send.status === 'sent' ? 'sent' : 'failed'}><span>{send.status === 'sent' ? 'Sent' : 'Failed'} {sentAtLabel(send.sent_at)}</span><small>{send.recipient} · {send.subject}</small></div>)}</section>}

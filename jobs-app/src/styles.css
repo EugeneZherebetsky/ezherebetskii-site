@@ -73,6 +73,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); box-shado
 .error-banner, .notice-banner { margin-bottom: 16px; padding: 12px 14px; border-radius: 11px; font-size: 13px; }
 .error-banner { background: #fff0ee; color: var(--red); }
 .notice-banner { background: #eaf8f1; color: #096a48; }
+.sync-retry-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; padding: 13px 14px; border: 1px solid #f2cf84; border-radius: 11px; background: #fff8e8; color: #76510c; }
+.sync-retry-banner > span { display: grid; gap: 3px; font-size: 12px; line-height: 1.45; }
+.sync-retry-banner .button { flex: none; }
 
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; margin-bottom: 18px; }
 .metrics article { min-height: 118px; display: flex; flex-direction: column; justify-content: space-between; padding: 19px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); box-shadow: 0 8px 26px rgba(26,38,57,.04); }
@@ -267,6 +270,8 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
   .cv-grid { grid-template-columns: 1fr; padding: 12px; }
   .reminder-list > button { grid-template-columns: 1fr; gap: 7px; }
   .row-actions { justify-content: flex-start; }
+  .sync-retry-banner { align-items: stretch; flex-direction: column; }
+  .sync-retry-banner .button { width: 100%; }
 }
 
 @media (max-width: 560px) {

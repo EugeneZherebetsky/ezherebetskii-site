@@ -34,31 +34,35 @@ declare global {
   }
 }
 
-let googleToken: { clientId: string; accessToken: string; expiresAt: number } | null = null
+let googleToken: { userId: string; clientId: string; accessToken: string; expiresAt: number } | null = null
+let googleAccessGeneration = 0
 
 export function validGoogleClientId(value: string) {
   return GOOGLE_CLIENT_ID_PATTERN.test(value.trim())
 }
 
-export function hasGoogleAccess(clientId: string | null | undefined) {
-  return Boolean(clientId && googleToken?.clientId === clientId && googleToken.expiresAt > Date.now() + 60_000)
+export function hasGoogleAccess(userId: string, clientId: string | null | undefined) {
+  return Boolean(userId && clientId && googleToken?.userId === userId && googleToken.clientId === clientId && googleToken.expiresAt > Date.now() + 60_000)
 }
 
 export function clearGoogleAccess() {
   googleToken = null
+  googleAccessGeneration += 1
 }
 
-export function requestGoogleAccess(clientId: string) {
+export function requestGoogleAccess(userId: string, clientId: string) {
+  if (!userId) return Promise.reject(new Error('Sign in to Opportunity Desk before connecting Google.'))
   const normalizedClientId = clientId.trim()
   if (!validGoogleClientId(normalizedClientId)) {
     return Promise.reject(new Error('Add a valid Google OAuth client ID in Settings first.'))
   }
-  if (hasGoogleAccess(normalizedClientId)) return Promise.resolve(googleToken!.accessToken)
+  if (hasGoogleAccess(userId, normalizedClientId)) return Promise.resolve(googleToken!.accessToken)
 
   const oauth2 = window.google?.accounts?.oauth2
   if (!oauth2) return Promise.reject(new Error('Google authorization is still loading. Wait a moment and try again.'))
 
   return new Promise<string>((resolve, reject) => {
+    const requestGeneration = googleAccessGeneration
     let settled = false
     let timeout = 0
     const finish = (callback: () => void) => {
@@ -72,6 +76,10 @@ export function requestGoogleAccess(clientId: string) {
       client_id: normalizedClientId,
       scope: GOOGLE_SCOPES.join(' '),
       callback: (response) => finish(() => {
+        if (requestGeneration !== googleAccessGeneration) {
+          reject(new Error('Your Opportunity Desk session changed. Connect Google again.'))
+          return
+        }
         if (!response.access_token) {
           reject(new Error(response.error_description || response.error || 'Google authorization was cancelled.'))
           return
@@ -81,6 +89,7 @@ export function requestGoogleAccess(clientId: string) {
           return
         }
         googleToken = {
+          userId,
           clientId: normalizedClientId,
           accessToken: response.access_token,
           expiresAt: Date.now() + Math.max(60, Number(response.expires_in) || 3600) * 1000,

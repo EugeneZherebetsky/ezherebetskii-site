@@ -62,6 +62,8 @@ Calendar and Gmail use Google Identity Services' browser token model. The site s
 
 Google authorization expires periodically by design. Calendar or Gmail actions will ask you to reconnect when a fresh token is required.
 
+If Gmail accepts a message while the database is temporarily unavailable, Opportunity Desk keeps the message ID in a per-user browser retry queue. Use **Retry history sync** to record the existing message after connectivity returns; the retry never sends the email again.
+
 ## Verification
 
 ```sh
