@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
 import {
   ACTIVE_STATUSES,
   BOARD_COLUMNS,
@@ -18,10 +19,13 @@ import {
 } from '../lib/opportunities'
 import {
   APP_VIEWS,
+  EMPTY_CV,
   EMPTY_JOB,
   JOB_STATUSES,
   STATUS_LABELS,
   type AppView,
+  type CV,
+  type CVDraft,
   type DefaultView,
   type Job,
   type JobDraft,
@@ -29,6 +33,7 @@ import {
   type SettingsDraft,
   type UserSettings,
 } from '../types'
+import { CVForm } from './CVForm'
 import { JobForm } from './JobForm'
 
 const NAV_ITEMS: Array<{ view: AppView; label: string; symbol: string }> = [
@@ -111,6 +116,7 @@ type WorkspaceProps = { session: Session }
 
 export function Workspace({ session }: WorkspaceProps) {
   const [jobs, setJobs] = useState<Job[]>([])
+  const [cvs, setCVs] = useState<CV[]>([])
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [settingsPersisted, setSettingsPersisted] = useState(false)
   const [view, setView] = useState<AppView>('dashboard')
@@ -121,16 +127,21 @@ export function Workspace({ session }: WorkspaceProps) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | JobStatus>('all')
   const [editing, setEditing] = useState<Job | 'new' | null>(null)
+  const [editingCV, setEditingCV] = useState<CV | 'new' | null>(null)
   const initialViewSet = useRef(false)
 
   const loadWorkspace = useCallback(async () => {
-    const [jobsResult, settingsResult] = await Promise.all([
+    const [jobsResult, cvsResult, settingsResult] = await Promise.all([
       supabase.from('jobs').select('*').order('updated_at', { ascending: false }),
+      supabase.from('cvs').select('*').order('updated_at', { ascending: false }),
       supabase.from('user_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
     ])
 
     if (jobsResult.error) setError(jobsResult.error.message)
     else setJobs((jobsResult.data ?? []) as Job[])
+
+    if (cvsResult.error) setError(cvsResult.error.message)
+    else setCVs((cvsResult.data ?? []) as CV[])
 
     if (settingsResult.error) {
       setError(settingsResult.error.message)
@@ -154,6 +165,7 @@ export function Workspace({ session }: WorkspaceProps) {
     const channel = supabase
       .channel(`opportunity-desk-${session.user.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
       .subscribe()
     return () => { void supabase.removeChannel(channel) }
@@ -374,6 +386,125 @@ export function Workspace({ session }: WorkspaceProps) {
     }
   }
 
+  async function saveCV(draft: CVDraft, file: File | null) {
+    if (!editingCV) return
+    const recordBeingEdited = editingCV
+    const cvId = recordBeingEdited === 'new' ? crypto.randomUUID() : recordBeingEdited.id
+    let uploadedPath: string | null = null
+    setBusy(true)
+    setError('')
+    setNotice('')
+
+    try {
+      let plainText = draft.plain_text.trim() || null
+      let filePayload: Pick<CV, 'storage_path' | 'original_filename' | 'mime_type' | 'size_bytes'> | Record<string, never> = {}
+
+      if (file) {
+        const { extension, mimeType } = validateCVFile(file)
+        if (extension === 'txt' && !plainText) plainText = (await file.text()).trim() || null
+        uploadedPath = `${session.user.id}/${cvId}/${Date.now()}-${safeStorageFilename(file.name)}`
+        const { error: uploadError } = await supabase.storage.from('cvs').upload(uploadedPath, file, {
+          cacheControl: '3600',
+          contentType: mimeType,
+          upsert: false,
+        })
+        if (uploadError) throw uploadError
+        filePayload = {
+          storage_path: uploadedPath,
+          original_filename: file.name,
+          mime_type: mimeType,
+          size_bytes: file.size,
+        }
+      }
+
+      const payload = {
+        name: draft.name.trim(),
+        target_role: draft.target_role.trim() || null,
+        notes: draft.notes.trim() || null,
+        plain_text: plainText,
+        ...filePayload,
+      }
+      const result = recordBeingEdited === 'new'
+        ? await supabase.from('cvs').insert({ id: cvId, user_id: session.user.id, data: {}, ...payload }).select('id, version').maybeSingle()
+        : await supabase.from('cvs').update(payload).eq('id', recordBeingEdited.id).eq('version', recordBeingEdited.version).select('id, version').maybeSingle()
+
+      if (result.error) throw result.error
+      if (!result.data && recordBeingEdited !== 'new') {
+        if (uploadedPath) {
+          await supabase.storage.from('cvs').remove([uploadedPath])
+          uploadedPath = null
+        }
+        const { data: latest, error: latestError } = await supabase.from('cvs').select('version').eq('id', recordBeingEdited.id).maybeSingle()
+        if (latestError) throw latestError
+        if (!latest) setError('This CV was deleted on another device. Your unsaved edits remain open.')
+        else {
+          setEditingCV({ ...recordBeingEdited, version: latest.version })
+          setError('This CV changed on another device. Your edits remain open. Review them, then save again.')
+        }
+        await loadWorkspace()
+        return
+      }
+
+      let cleanupWarning = ''
+      if (recordBeingEdited !== 'new' && uploadedPath && recordBeingEdited.storage_path && recordBeingEdited.storage_path !== uploadedPath) {
+        const { error: cleanupError } = await supabase.storage.from('cvs').remove([recordBeingEdited.storage_path])
+        if (cleanupError) cleanupWarning = ' The older file could not be removed automatically.'
+      }
+      uploadedPath = null
+      setEditingCV(null)
+      setNotice(`CV saved and synchronized.${cleanupWarning}`)
+      await loadWorkspace()
+    } catch (caught) {
+      if (uploadedPath) await supabase.storage.from('cvs').remove([uploadedPath])
+      setError(caught instanceof Error ? caught.message : 'The CV could not be saved.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function downloadCV(cv: CV) {
+    if (!cv.storage_path) {
+      setError('This is a text-only CV and has no file to download.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    const { data, error: downloadError } = await supabase.storage.from('cvs').download(cv.storage_path)
+    if (downloadError) setError(downloadError.message)
+    else {
+      const url = URL.createObjectURL(data)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = cv.original_filename || `${safeStorageFilename(cv.name)}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setNotice('CV download started.')
+    }
+    setBusy(false)
+  }
+
+  async function deleteCV(cv: CV) {
+    if (!window.confirm(`Delete ${cv.name}? This removes its saved file and cannot be undone.`)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: deleteError } = await supabase.from('cvs').delete().eq('id', cv.id).eq('version', cv.version).select('id').maybeSingle()
+    if (deleteError) setError(deleteError.message)
+    else if (!data) setError('This CV changed or was deleted on another device. The latest library has been loaded; please review it and try again.')
+    else {
+      let cleanupWarning = ''
+      if (cv.storage_path) {
+        const { error: cleanupError } = await supabase.storage.from('cvs').remove([cv.storage_path])
+        if (cleanupError) cleanupWarning = ' Its database record was deleted, but the stored file could not be cleaned up automatically.'
+      }
+      setNotice(`CV deleted.${cleanupWarning}`)
+    }
+    await loadWorkspace()
+    setBusy(false)
+  }
+
   async function enableNotifications() {
     if (!('Notification' in window)) {
       setError('This browser does not support desktop notifications.')
@@ -393,7 +524,7 @@ export function Workspace({ session }: WorkspaceProps) {
           {NAV_ITEMS.map((item) => (
             <button key={item.view} className={view === item.view ? 'nav-item active' : 'nav-item'} onClick={() => setView(item.view)}>
               <span aria-hidden="true">{item.symbol}</span>{item.label}
-              {(item.view === 'cvs' || item.view === 'search') && <small>next</small>}
+              {item.view === 'search' && <small>next</small>}
             </button>
           ))}
         </nav>
@@ -406,7 +537,7 @@ export function Workspace({ session }: WorkspaceProps) {
         <main className="dashboard">
           <section className="page-head">
             <div><p className="eyebrow">Private synchronized workspace</p><h1>{viewTitle(view)}</h1></div>
-            <button className="button primary add-button" onClick={() => { setError(''); setEditing('new') }}>+ Add application</button>
+            <button className="button primary add-button" onClick={() => { setError(''); if (view === 'cvs') setEditingCV('new'); else setEditing('new') }}>{view === 'cvs' ? '+ Add CV' : '+ Add application'}</button>
           </section>
 
           {error && <div className="error-banner" role="alert">{error}</div>}
@@ -419,7 +550,7 @@ export function Workspace({ session }: WorkspaceProps) {
               {view === 'reminders' && <RemindersView jobs={reminders} onEdit={openEditor} onEnable={enableNotifications} />}
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
               {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} onSave={saveSettings} onEnableNotifications={enableNotifications} />}
-              {view === 'cvs' && <NextPhaseView title="CV library" message="The synchronized CV library is the next build step. Its secure database fields are already prepared." />}
+              {view === 'cvs' && <CVLibrary cvs={cvs} busy={busy} onAdd={() => { setError(''); setEditingCV('new') }} onEdit={(cv) => { setError(''); setEditingCV(cv) }} onDownload={downloadCV} onDelete={deleteCV} />}
               {view === 'search' && <NextPhaseView title="Find jobs" message="Live job search will be added after the core tracker is verified. Public feeds will stay in the browser; private API keys will stay in Supabase." />}
             </>
           )}
@@ -427,6 +558,7 @@ export function Workspace({ session }: WorkspaceProps) {
       </div>
 
       {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} />}
+      {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
     </div>
   )
 }
@@ -467,8 +599,34 @@ function RemindersView({ jobs, onEdit, onEnable }: { jobs: Job[]; onEdit: (job: 
   return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Follow-up queue</p><h2>{jobs.length} scheduled actions</h2></div><button className="button secondary" onClick={() => void onEnable()}>Enable browser alerts</button></div>{jobs.length === 0 ? <div className="empty-state"><strong>Nothing is due</strong><span>Add a next action and date to an application to see it here.</span></div> : <div className="reminder-list">{jobs.map((job) => <button key={job.id} onClick={() => onEdit(job)}><time dateTime={job.next_action_at!}>{formatDateTime(job.next_action_at!)}</time><span><strong>{job.next_action || 'Follow up'}</strong><small>{job.role_title} at {job.company}</small></span><em className={new Date(job.next_action_at!).getTime() < Date.now() ? 'overdue' : ''}>{relativeDueLabel(job.next_action_at!)}</em></button>)}</div>}</section>
 }
 
+function CVLibrary({ cvs, busy, onAdd, onEdit, onDownload, onDelete }: { cvs: CV[]; busy: boolean; onAdd: () => void; onEdit: (cv: CV) => void; onDownload: (cv: CV) => Promise<void>; onDelete: (cv: CV) => Promise<void> }) {
+  const [search, setSearch] = useState('')
+  const filteredCVs = useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    if (!needle) return cvs
+    return cvs.filter((cv) => [cv.name, cv.target_role ?? '', cv.notes ?? '', cv.plain_text ?? ''].some((value) => value.toLowerCase().includes(needle)))
+  }, [cvs, search])
+
+  return (
+    <section className="workspace-card">
+      <div className="workspace-head"><div><p className="eyebrow">Secure document workspace</p><h2>{cvs.length} CV versions</h2></div><div className="controls"><input aria-label="Search CVs" placeholder="Search name, role, notes, or text" value={search} onChange={(event) => setSearch(event.target.value)} /></div></div>
+      {filteredCVs.length === 0 ? <div className="empty-state"><strong>{cvs.length ? 'No matching CVs' : 'Build your CV library'}</strong><span>{cvs.length ? 'Try a different search.' : 'Upload a document, paste a text version, or use both. Your private library will follow your account to every device.'}</span>{!cvs.length && <button className="button primary" onClick={onAdd}>Add your first CV</button>}</div> : (
+        <div className="cv-grid">{filteredCVs.map((cv) => (
+          <article className="cv-card" key={cv.id}>
+            <div className="cv-card-head"><span className="cv-file-mark" aria-hidden="true">CV</span><div><h3>{cv.name}</h3><p>{cv.target_role || 'General CV'}</p></div></div>
+            <div className="cv-meta"><span>{cv.storage_path ? cv.original_filename || 'Stored file' : 'Text-only version'}</span>{cv.size_bytes != null && <span>{formatFileSize(cv.size_bytes)}</span>}<span>Updated {formatDateTime(cv.updated_at)}</span></div>
+            {cv.notes && <p className="cv-notes">{cv.notes}</p>}
+            {cv.plain_text && <p className="cv-preview">{cv.plain_text.slice(0, 180)}{cv.plain_text.length > 180 ? '…' : ''}</p>}
+            <div className="cv-actions">{cv.storage_path && <button className="button secondary" disabled={busy} onClick={() => void onDownload(cv)}>Download</button>}<button className="button secondary" disabled={busy} onClick={() => onEdit(cv)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(cv)}>Delete</button></div>
+          </article>
+        ))}</div>
+      )}
+    </section>
+  )
+}
+
 function BackupView({ jobs, busy, onJson, onCsv, onImport }: { jobs: Job[]; busy: boolean; onJson: () => void; onCsv: () => void; onImport: (event: ChangeEvent<HTMLInputElement>) => Promise<void> }) {
-  return <div className="settings-grid"><section className="workspace-card panel"><p className="eyebrow">Portable copy</p><h2>Export your data</h2><p>Download a complete JSON backup for restoration, or a CSV copy for a spreadsheet.</p><div className="button-row"><button className="button primary" onClick={onJson}>Download JSON backup</button><button className="button secondary" onClick={onCsv}>Download CSV</button></div></section><section className="workspace-card panel"><p className="eyebrow">Restore</p><h2>Import a backup</h2><p>Import a JSON file created by this version of Opportunity Desk. Matching application IDs are updated; new ones are added.</p><label className={busy ? 'button secondary file-button disabled' : 'button secondary file-button'}>{busy ? 'Importing…' : 'Choose JSON backup'}<input type="file" accept="application/json,.json" disabled={busy} onChange={(event) => void onImport(event)} /></label><small>{jobs.length} applications are currently synchronized.</small></section></div>
+  return <div className="settings-grid"><section className="workspace-card panel"><p className="eyebrow">Portable application copy</p><h2>Export applications</h2><p>Download application records as a restorable JSON file or a CSV spreadsheet. CV files remain protected in the separate private library.</p><div className="button-row"><button className="button primary" onClick={onJson}>Download JSON backup</button><button className="button secondary" onClick={onCsv}>Download CSV</button></div></section><section className="workspace-card panel"><p className="eyebrow">Restore applications</p><h2>Import a backup</h2><p>Import a JSON file created by this version of Opportunity Desk. Matching application IDs are updated; new ones are added.</p><label className={busy ? 'button secondary file-button disabled' : 'button secondary file-button'}>{busy ? 'Importing…' : 'Choose JSON backup'}<input type="file" accept="application/json,.json" disabled={busy} onChange={(event) => void onImport(event)} /></label><small>{jobs.length} applications are currently synchronized.</small></section></div>
 }
 
 function SettingsView({ settings, busy, onSave, onEnableNotifications }: { settings: UserSettings; busy: boolean; onSave: (draft: SettingsDraft) => Promise<void>; onEnableNotifications: () => Promise<void> }) {

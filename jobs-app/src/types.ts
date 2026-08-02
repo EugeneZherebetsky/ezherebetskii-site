@@ -92,6 +92,30 @@ export type JobDraft = {
   email_body: string
 }
 
+export type CV = {
+  id: string
+  user_id: string
+  name: string
+  storage_path: string | null
+  target_role: string | null
+  notes: string | null
+  original_filename: string | null
+  mime_type: string | null
+  size_bytes: number | null
+  plain_text: string | null
+  created_at: string
+  updated_at: string
+  version: number
+  data: Record<string, unknown>
+}
+
+export type CVDraft = {
+  name: string
+  target_role: string
+  notes: string
+  plain_text: string
+}
+
 export type UserSettings = {
   user_id: string
   default_view: DefaultView
@@ -126,4 +150,11 @@ export const EMPTY_JOB: JobDraft = {
   email_recipient: '',
   email_subject: '',
   email_body: '',
+}
+
+export const EMPTY_CV: CVDraft = {
+  name: '',
+  target_role: '',
+  notes: '',
+  plain_text: '',
 }

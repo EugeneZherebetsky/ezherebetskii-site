@@ -25,8 +25,10 @@ This phase restores and improves:
 - browser notifications while the application is open
 - JSON backup/restore and CSV export
 - optimistic locking so concurrent edits are not silently lost
+- private CV file uploads, text-only CV versions, editing, download, and deletion
+- live CV library refresh across signed-in devices
 
-The schema is prepared for the next phase: the CV library and immutable email-send history. Live job search, Google integrations, and AI tailoring follow after the core tracker and CV workflow are verified.
+The schema is prepared for immutable email-send history. Live job search, Google integrations, and AI tailoring follow after the core tracker and CV workflow are verified.
 
 ## Local development
 

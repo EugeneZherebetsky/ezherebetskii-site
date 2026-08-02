@@ -143,6 +143,20 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .reminder-list > button > span { display: grid; gap: 3px; }
 .reminder-list small { color: var(--muted); }
 
+.cv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; padding: 18px; }
+.cv-card { min-width: 0; display: flex; flex-direction: column; gap: 15px; padding: 19px; border: 1px solid var(--line); border-radius: 15px; background: #fff; box-shadow: 0 7px 20px rgba(26,38,57,.04); }
+.cv-card-head { display: flex; align-items: center; gap: 12px; }
+.cv-card-head > div { min-width: 0; }
+.cv-card-head h3 { overflow: hidden; margin: 0 0 3px; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.cv-card-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.cv-file-mark { width: 42px; height: 48px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid #bcd0f5; border-radius: 9px; background: #e8f1ff; color: var(--blue); font-size: 11px; font-weight: 900; }
+.cv-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 11px; }
+.cv-meta span:first-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-notes, .cv-preview { margin: 0; color: #475467; font-size: 12px; line-height: 1.55; }
+.cv-preview { display: -webkit-box; overflow: hidden; padding: 11px; border-radius: 9px; background: #f6f8fb; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.cv-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: auto; padding-top: 3px; }
+.job-form label small { color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.45; }
+
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .settings-grid p, .settings-form p { color: var(--muted); line-height: 1.6; }
 .settings-grid small { display: block; margin-top: 18px; color: var(--muted); }
@@ -190,6 +204,7 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
   .controls { flex-direction: column; }
   .controls input, .controls select { min-width: 0; }
   .settings-grid { grid-template-columns: 1fr; }
+  .cv-grid { grid-template-columns: 1fr; padding: 12px; }
   .reminder-list > button { grid-template-columns: 1fr; gap: 7px; }
   .row-actions { justify-content: flex-start; }
 }
