@@ -356,6 +356,7 @@ export function Workspace({ session }: WorkspaceProps) {
             email_subject: job.email_subject ?? '',
             email_body: job.email_body ?? '',
           }),
+          data: job.data ?? {},
         }
       })
 
@@ -401,7 +402,7 @@ export function Workspace({ session }: WorkspaceProps) {
 
       <div className="workspace-shell">
         <header className="mobile-topbar"><strong>Opportunity Desk</strong><button className="button ghost" onClick={() => void supabase.auth.signOut()}>Sign out</button></header>
-        <div className="mobile-nav" aria-label="Mobile navigation">{NAV_ITEMS.slice(0, 5).map((item) => <button key={item.view} className={view === item.view ? 'active' : ''} onClick={() => setView(item.view)}>{item.label}</button>)}</div>
+        <div className="mobile-nav" aria-label="Mobile navigation">{NAV_ITEMS.map((item) => <button key={item.view} className={view === item.view ? 'active' : ''} onClick={() => setView(item.view)}>{item.label}</button>)}</div>
         <main className="dashboard">
           <section className="page-head">
             <div><p className="eyebrow">Private synchronized workspace</p><h1>{viewTitle(view)}</h1></div>

@@ -181,7 +181,7 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
   .sidebar { display: none; }
   .mobile-topbar { height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: var(--navy); color: white; }
   .mobile-topbar .button { color: white; }
-  .mobile-nav { display: flex; overflow-x: auto; padding: 8px 12px; border-bottom: 1px solid var(--line); background: white; }
+  .mobile-nav { display: flex; overflow-x: auto; overscroll-behavior-inline: contain; padding: 8px 12px; border-bottom: 1px solid var(--line); background: white; scrollbar-width: thin; }
   .mobile-nav button { padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); white-space: nowrap; font-size: 11px; font-weight: 750; }
   .mobile-nav button.active { background: #e8f1ff; color: var(--blue); }
   .dashboard { padding: 24px 14px 56px; }
