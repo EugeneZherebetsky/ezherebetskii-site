@@ -161,8 +161,8 @@ PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 | `src/lib/tailoring.ts` | Keyword normalization, CV ranking, Edge Function invocation, and saved/copyable text creation. |
 | `src/types.ts` | Shared application, CV, settings, send-history, status, and draft types. |
 | `src/styles.css` | Desktop and mobile layout. |
-| `supabase/functions/tailor-cv/index.ts` | Authenticated OpenAI server integration and generation accounting. |
-| `supabase/migrations/` | Replayable database history. Never replace migrations with untracked dashboard-only changes. |
+| `../supabase/functions/tailor-cv/index.ts` | Authenticated OpenAI server integration and generation accounting. |
+| `../supabase/migrations/` | Replayable database history. Never replace migrations with untracked dashboard-only changes. |
 
 ## Database and storage map
 
