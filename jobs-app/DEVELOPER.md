@@ -77,6 +77,7 @@ The browser receives only the public Supabase project URL and publishable key. T
 | AI CV tailoring | Merged in PR #10 | Local matching, protected AI drafting, usage limits, complete source-CV preservation, and form-validation safeguards. Add the server secret before production acceptance testing. |
 | Networking and interview preparation | Merged in PR #13 | Contact tracker with its own pipeline, interaction history, reminders, STAR story library, and per-application interview preparation. |
 | Analytics and server reminders | Merged in PR #14 | Immutable stage-event history, honest counts-first analytics, and an opt-in scheduled email digest of due follow-ups. |
+| CV builder from reusable blocks | In progress | Reusable CV blocks, a STAR story reading view, and role-targeted CV assembly from material the user has already written. |
 
 PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 PR #13: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/13>
@@ -176,6 +177,24 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - One preparation record per application, enforced by a unique index; concurrent creation from two devices resolves to a clear conflict message.
 - Preparation saves are locked against the record version the open draft was loaded from, not the latest Realtime state, so a background refresh cannot let a stale draft silently overwrite another device's save.
 
+### CV builder
+
+- `cv_blocks` holds reusable CV content the user has already written and verified: profile summary, skills, experience, achievement, education, certification, and other.
+- STAR stories are the experience evidence and are offered to the builder alongside blocks; they are matched on their full STAR text but assembled as a single bullet.
+- A story bullet is composed only from the story's own sentences — the opening of the Action and, when present, the opening of the Result. Nothing is generated, and no model is called.
+- The target role is either an application with a job description or pasted requirements. Requirements are the same locally derived keywords used elsewhere, so ranking is consistent across the app.
+- Ranking is by how many role requirements an item actually contains, and the matched keywords are shown, so the order is explainable rather than a black-box score.
+- Coverage shows which requirements the current selection evidences and which it does not. Missing terms are a prompt to add a block the user genuinely has, never a score, and the interface says so.
+- The assembled preview follows the selection until it is edited by hand, then stops overwriting and offers an explicit rebuild instead.
+- Saving creates a new text CV in the library and never overwrites an existing one. When the target was an application, the CV can be linked to it with the same optimistic-lock handling used by AI tailoring.
+- Deleting a block does not alter CVs already built from it, because assembly copies text rather than referencing it.
+
+### STAR story reading
+
+- Story cards show all four STAR parts at a glance, with parts that are not yet recorded marked as missing rather than hidden.
+- A reading view shows the complete story, its skills, and its usage notes without entering edit mode, and hands off to the editor.
+- Ranked story suggestions in the interview panel open the same reading view.
+
 ### Analytics
 
 - `job_stage_events` records immutable application-stage history: a `created` event on insert and a `status_change` event on every status transition, written by a protected trigger.
@@ -210,6 +229,9 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/components/InterviewPrep.tsx` | Upcoming interviews, likely topics, story ranking, checklist, preparation notes, and the STAR library. |
 | `src/components/StarStoryForm.tsx` | STAR story editor. |
 | `src/components/Analytics.tsx` | Counts-first analytics view: weekly effort, funnel, response times, sources, and CV performance. |
+| `src/components/StarStoryView.tsx` | Read-only STAR story view with missing-part warnings. |
+| `src/components/CVBuilder.tsx` | Role targeting, ranked blocks and stories, coverage, editable preview, and saving a built CV. |
+| `src/components/CVBlockForm.tsx` | Reusable CV block editor. |
 | `src/lib/supabase.ts` | Browser Supabase client using public environment values. |
 | `src/lib/opportunities.ts` | Application conversions, filtering, dates, board columns, CSV, and JSON helpers. |
 | `src/lib/cvs.ts` | CV file validation, safe filenames, downloads, and attachment preparation. |
@@ -218,6 +240,7 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/lib/tailoring.ts` | Keyword normalization, CV ranking, top-keyword extraction, Edge Function invocation, and saved/copyable text creation. |
 | `src/lib/networking.ts` | Contact, interaction, story, and preparation conversions; contact filtering; interview-topic derivation and story ranking. |
 | `src/lib/analytics.ts` | Pure analytics functions: reached statuses, funnel, weekly buckets, median response time, grouped outcomes. |
+| `src/lib/cvBuilder.ts` | Role requirements, candidate ranking, story-to-bullet derivation, CV assembly, and coverage reporting. |
 | `src/types.ts` | Shared application, CV, contact, interaction, STAR story, interview-preparation, stage-event, settings, send-history, status, and draft types. |
 | `src/lib/*.test.ts` | Vitest unit tests for the pure library logic. Run with `npm test`. |
 | `src/styles.css` | Desktop and mobile layout. |
@@ -236,7 +259,8 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `public.ai_generations` | Server-only generation status, model, usage, and rolling-limit accounting. |
 | `public.contacts` | Networking contacts, relationship type, pipeline stage, optional opportunity link, next action, version, and extension data. |
 | `public.contact_interactions` | Logged conversations per contact with channel, time, and summary. |
-| `public.star_stories` | Reusable STAR interview examples with skills and notes. |
+| `public.star_stories` | Reusable STAR interview examples with skills and notes; also the experience evidence offered to the CV builder. |
+| `public.cv_blocks` | Reusable typed CV content: summary, skills, experience, achievement, education, certification, other. |
 | `public.interview_preps` | One preparation record per application: research notes, questions, checklist, and post-interview notes. |
 | `public.job_stage_events` | Immutable application-stage history; synthetic backfills are marked for exclusion from duration metrics. |
 | `public.reminder_deliveries` | Server-managed log deduplicating sent reminder emails per (user, item, due time); users can read their own rows. |
@@ -282,6 +306,7 @@ Supabase considers an update that changes zero rows successful, so checking only
 | `20260804120000_add_networking_and_interview_prep.sql` | Adds contacts, interactions, STAR stories, interview preparation, ownership checks, deletion broadcasts, and Realtime. |
 | `20260804170000_add_job_stage_events.sql` | Adds immutable stage-event history with a recording trigger and marked synthetic backfills. |
 | `20260804171000_add_server_reminders.sql` | Adds email-reminder settings, the delivery dedup log, and the hourly pg_cron invocation of `send-reminders`. |
+| `20260804180000_add_cv_blocks.sql` | Adds reusable CV blocks with RLS, ordering, deletion broadcast, and Realtime. |
 
 For a schema change:
 

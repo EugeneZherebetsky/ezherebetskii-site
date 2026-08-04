@@ -18,6 +18,7 @@ import {
   toLocalDateTimeInput,
   toDraft,
 } from '../lib/opportunities'
+import { blockDraftToPayload, blockToDraft } from '../lib/cvBuilder'
 import {
   contactDraftToPayload,
   contactToDraft,
@@ -28,8 +29,10 @@ import {
 } from '../lib/networking'
 import {
   APP_VIEWS,
+  CV_BLOCK_TYPE_LABELS,
   EMPTY_CONTACT,
   EMPTY_CV,
+  EMPTY_CV_BLOCK,
   EMPTY_JOB,
   EMPTY_STAR_STORY,
   JOB_STATUSES,
@@ -37,6 +40,8 @@ import {
   type ApplicationSend,
   type AppView,
   type CV,
+  type CVBlock,
+  type CVBlockDraft,
   type CVDraft,
   type Contact,
   type ContactDraft,
@@ -59,11 +64,14 @@ import {
 import { AnalyticsView } from './Analytics'
 import { ContactForm } from './ContactForm'
 import { ContactsView } from './Contacts'
+import { CVBlockForm } from './CVBlockForm'
+import { CVBuilder, type BuiltCV } from './CVBuilder'
 import { CVForm } from './CVForm'
 import { InterviewPrepView } from './InterviewPrep'
 import { JobForm } from './JobForm'
 import { JobSearch } from './JobSearch'
 import { StarStoryForm } from './StarStoryForm'
+import { StarStoryView } from './StarStoryView'
 import type { JobSearchResult } from '../lib/jobSearch'
 import { TailorCV } from './TailorCV'
 import { tailoredCVText, type TailoringResult } from '../lib/tailoring'
@@ -208,6 +216,7 @@ export function Workspace({ session }: WorkspaceProps) {
   const [starStories, setStarStories] = useState<StarStory[]>([])
   const [interviewPreps, setInterviewPreps] = useState<InterviewPrep[]>([])
   const [stageEvents, setStageEvents] = useState<JobStageEvent[]>([])
+  const [cvBlocks, setCVBlocks] = useState<CVBlock[]>([])
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [settingsPersisted, setSettingsPersisted] = useState(false)
   const [view, setView] = useState<AppView>('dashboard')
@@ -221,6 +230,9 @@ export function Workspace({ session }: WorkspaceProps) {
   const [editingCV, setEditingCV] = useState<CV | 'new' | null>(null)
   const [editingContact, setEditingContact] = useState<Contact | 'new' | null>(null)
   const [editingStar, setEditingStar] = useState<StarStory | 'new' | null>(null)
+  const [viewingStar, setViewingStar] = useState<StarStory | null>(null)
+  const [editingBlock, setEditingBlock] = useState<CVBlock | 'new' | null>(null)
+  const [buildingCV, setBuildingCV] = useState(false)
   const [tailoringJob, setTailoringJob] = useState<Job | null>(null)
   const [googleConnected, setGoogleConnected] = useState(false)
   const [pendingSendHistory, setPendingSendHistory] = useState<ApplicationSend | null>(() => readPendingSend(session.user.id))
@@ -247,7 +259,7 @@ export function Workspace({ session }: WorkspaceProps) {
   }
 
   const loadWorkspace = useCallback(async () => {
-    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, storiesResult, prepsResult, stageEventsResult] = await Promise.all([
+    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, storiesResult, prepsResult, stageEventsResult, blocksResult] = await Promise.all([
       supabase.from('jobs').select('*').order('updated_at', { ascending: false }),
       supabase.from('cvs').select('*').order('updated_at', { ascending: false }),
       supabase.from('user_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
@@ -259,6 +271,7 @@ export function Workspace({ session }: WorkspaceProps) {
       supabase.from('star_stories').select('*').order('updated_at', { ascending: false }),
       supabase.from('interview_preps').select('*'),
       fetchAllStageEvents(),
+      supabase.from('cv_blocks').select('*').order('block_type', { ascending: true }).order('sort_order', { ascending: true }),
     ])
 
     if (jobsResult.error) setError(jobsResult.error.message)
@@ -287,6 +300,9 @@ export function Workspace({ session }: WorkspaceProps) {
 
     if (stageEventsResult.error) setError(stageEventsResult.error.message)
     else setStageEvents(stageEventsResult.data ?? [])
+
+    if (blocksResult.error) setError(blocksResult.error.message)
+    else setCVBlocks((blocksResult.data ?? []) as CVBlock[])
 
     if (settingsResult.error) {
       setError(settingsResult.error.message)
@@ -359,6 +375,8 @@ export function Workspace({ session }: WorkspaceProps) {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'interview_preps', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'interview_preps', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'job_stage_events', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'cv_blocks', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cv_blocks', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .subscribe()
     }
 
@@ -720,6 +738,100 @@ export function Workspace({ session }: WorkspaceProps) {
       setNotice('STAR story saved and synchronized.')
       await loadWorkspace()
     }
+    setBusy(false)
+  }
+
+  async function saveCVBlock(draft: CVBlockDraft) {
+    if (!editingBlock) return
+    const recordBeingEdited = editingBlock
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = blockDraftToPayload(draft)
+    const result = recordBeingEdited === 'new'
+      ? await supabase.from('cv_blocks').insert({ ...payload, user_id: session.user.id }).select('id, version').maybeSingle()
+      : await supabase.from('cv_blocks').update(payload).eq('id', recordBeingEdited.id).eq('version', recordBeingEdited.version).select('id, version').maybeSingle()
+
+    if (result.error) setError(result.error.message)
+    else if (!result.data && recordBeingEdited !== 'new') {
+      const { data: latest, error: latestError } = await supabase.from('cv_blocks').select('version').eq('id', recordBeingEdited.id).maybeSingle()
+      if (latestError) setError(latestError.message)
+      else if (!latest) setError('This block was deleted on another device. Your unsaved edits remain open.')
+      else {
+        setEditingBlock({ ...recordBeingEdited, version: latest.version })
+        setError('This block changed on another device. Your edits remain open. Review them, then save again.')
+      }
+      await loadWorkspace()
+    } else {
+      setEditingBlock(null)
+      setNotice('CV block saved and synchronized.')
+      await loadWorkspace()
+    }
+    setBusy(false)
+  }
+
+  async function deleteCVBlock(block: CVBlock) {
+    if (!window.confirm(`Delete the block “${block.title}”? This cannot be undone. CVs already built from it keep their text.`)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: deleteError } = await supabase.from('cv_blocks').delete().eq('id', block.id).eq('version', block.version).select('id').maybeSingle()
+    if (deleteError) setError(deleteError.message)
+    else if (!data) setError('This block changed or was deleted on another device. The latest list has been loaded.')
+    else setNotice('CV block deleted.')
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function saveBuiltCV(built: BuiltCV) {
+    const cvId = crypto.randomUUID()
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: insertError } = await supabase.from('cvs').insert({
+      id: cvId,
+      user_id: session.user.id,
+      name: built.name,
+      target_role: built.job?.role_title ?? null,
+      notes: 'Assembled in the CV builder from saved blocks and STAR stories. Review before sending.',
+      plain_text: built.text,
+      tailored_company: built.job?.company ?? null,
+      storage_path: null,
+      original_filename: null,
+      mime_type: 'text/plain',
+      size_bytes: new Blob([built.text]).size,
+      data: {
+        built_from_blocks: {
+          job_id: built.job?.id ?? null,
+          built_at: new Date().toISOString(),
+        },
+      },
+    })
+    if (insertError) {
+      setError(insertError.message)
+      setBusy(false)
+      return
+    }
+
+    if (built.job && built.linkToJob) {
+      const { data: linked, error: linkError } = await supabase
+        .from('jobs')
+        .update({ cv_id: cvId })
+        .eq('id', built.job.id)
+        .eq('version', built.job.version)
+        .select('id')
+        .maybeSingle()
+      if (linkError) setError(`The CV was saved, but could not be linked: ${linkError.message}`)
+      else if (!linked) setError('The CV was saved, but this application changed on another device. Open it and link the new CV manually.')
+      else {
+        setBuildingCV(false)
+        setNotice('CV built, saved to your library, and linked to the application.')
+      }
+    } else {
+      setBuildingCV(false)
+      setNotice('CV built and saved to your library.')
+    }
+    await loadWorkspace()
     setBusy(false)
   }
 
@@ -1378,11 +1490,11 @@ export function Workspace({ session }: WorkspaceProps) {
               {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} sends={applicationSends} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onTailor={(job) => { setError(''); setNotice(''); setTailoringJob(job) }} onDelete={deleteJob} onDownloadCV={downloadCV} />}
               {view === 'reminders' && <RemindersView jobs={reminders} contacts={contactReminders} onEdit={openEditor} onEditContact={(contact) => { setError(''); setEditingContact(contact) }} onEnable={enableNotifications} />}
               {view === 'contacts' && <ContactsView contacts={contacts} jobs={jobs} busy={busy} onAdd={() => { setError(''); setEditingContact('new') }} onEdit={(contact) => { setError(''); setEditingContact(contact) }} onDelete={deleteContact} onStage={changeContactStage} />}
-              {view === 'interviews' && <InterviewPrepView jobs={jobs} preps={interviewPreps} stories={starStories} busy={busy} onSavePrep={saveInterviewPrep} onAddStory={() => { setError(''); setEditingStar('new') }} onEditStory={(story) => { setError(''); setEditingStar(story) }} onDeleteStory={deleteStarStory} />}
+              {view === 'interviews' && <InterviewPrepView jobs={jobs} preps={interviewPreps} stories={starStories} busy={busy} onSavePrep={saveInterviewPrep} onAddStory={() => { setError(''); setEditingStar('new') }} onViewStory={(story) => { setError(''); setViewingStar(story) }} onEditStory={(story) => { setError(''); setEditingStar(story) }} onDeleteStory={deleteStarStory} />}
               {view === 'analytics' && <AnalyticsView jobs={jobs} contacts={contacts} cvs={cvs} stageEvents={stageEvents} />}
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
               {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} googleConnected={googleConnected} onSave={saveSettings} onConnectGoogle={connectGoogle} onEnableNotifications={enableNotifications} />}
-              {view === 'cvs' && <CVLibrary cvs={cvs} busy={busy} onAdd={() => { setError(''); setEditingCV('new') }} onEdit={(cv) => { setError(''); setEditingCV(cv) }} onDownload={downloadCV} onDelete={deleteCV} />}
+              {view === 'cvs' && <CVLibrary cvs={cvs} blocks={cvBlocks} busy={busy} onAdd={() => { setError(''); setEditingCV('new') }} onEdit={(cv) => { setError(''); setEditingCV(cv) }} onDownload={downloadCV} onDelete={deleteCV} onBuild={() => { setError(''); setNotice(''); setBuildingCV(true) }} onAddBlock={() => { setError(''); setEditingBlock('new') }} onEditBlock={(block) => { setError(''); setEditingBlock(block) }} onDeleteBlock={deleteCVBlock} />}
               {view === 'search' && <JobSearch jobs={jobs} busy={busy} onSave={saveSearchResult} />}
             </>
           )}
@@ -1392,6 +1504,9 @@ export function Workspace({ session }: WorkspaceProps) {
       {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onTailor={saveAndOpenTailoring} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
       {editingContact && <ContactForm initial={editingContact === 'new' ? EMPTY_CONTACT : contactToDraft(editingContact)} title={editingContact === 'new' ? 'Add a contact' : 'Update contact'} busy={busy} error={error} jobs={jobs} existing={editingContact !== 'new'} interactions={editingContact === 'new' ? [] : contactHistory} onCancel={() => { setError(''); setEditingContact(null) }} onSave={saveContact} onLogInteraction={logInteraction} onDeleteInteraction={deleteInteraction} />}
       {editingStar && <StarStoryForm initial={editingStar === 'new' ? EMPTY_STAR_STORY : starStoryToDraft(editingStar)} title={editingStar === 'new' ? 'Add a STAR story' : 'Update STAR story'} busy={busy} error={error} onCancel={() => { setError(''); setEditingStar(null) }} onSave={saveStarStory} />}
+      {viewingStar && !editingStar && <StarStoryView story={starStories.find((story) => story.id === viewingStar.id) ?? viewingStar} onClose={() => setViewingStar(null)} onEdit={(story) => { setViewingStar(null); setError(''); setEditingStar(story) }} />}
+      {editingBlock && <CVBlockForm initial={editingBlock === 'new' ? EMPTY_CV_BLOCK : blockToDraft(editingBlock)} title={editingBlock === 'new' ? 'Add a CV block' : 'Update CV block'} busy={busy} error={error} onCancel={() => { setError(''); setEditingBlock(null) }} onSave={saveCVBlock} />}
+      {buildingCV && <CVBuilder jobs={jobs} blocks={cvBlocks} stories={starStories} busy={busy} error={error} notice={notice} onClose={() => { setError(''); setBuildingCV(false) }} onSave={saveBuiltCV} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
       {tailoringJob && <TailorCV job={tailoringJob} cvs={cvs} busy={busy} actionError={error} actionNotice={notice} onClose={() => { setError(''); setTailoringJob(null) }} onSaveCV={saveTailoredCV} onUseCoverLetter={useTailoredCoverLetter} />}
     </div>
@@ -1468,7 +1583,7 @@ function RemindersView({ jobs, contacts, onEdit, onEditContact, onEnable }: { jo
   )
 }
 
-function CVLibrary({ cvs, busy, onAdd, onEdit, onDownload, onDelete }: { cvs: CV[]; busy: boolean; onAdd: () => void; onEdit: (cv: CV) => void; onDownload: (cv: CV) => Promise<void>; onDelete: (cv: CV) => Promise<void> }) {
+function CVLibrary({ cvs, blocks, busy, onAdd, onEdit, onDownload, onDelete, onBuild, onAddBlock, onEditBlock, onDeleteBlock }: { cvs: CV[]; blocks: CVBlock[]; busy: boolean; onAdd: () => void; onEdit: (cv: CV) => void; onDownload: (cv: CV) => Promise<void>; onDelete: (cv: CV) => Promise<void>; onBuild: () => void; onAddBlock: () => void; onEditBlock: (block: CVBlock) => void; onDeleteBlock: (block: CVBlock) => Promise<void> }) {
   const [search, setSearch] = useState('')
   const filteredCVs = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -1477,8 +1592,9 @@ function CVLibrary({ cvs, busy, onAdd, onEdit, onDownload, onDelete }: { cvs: CV
   }, [cvs, search])
 
   return (
+    <>
     <section className="workspace-card">
-      <div className="workspace-head"><div><p className="eyebrow">Secure document workspace</p><h2>{cvs.length} CV versions</h2></div><div className="controls"><input aria-label="Search CVs" placeholder="Search name, company, role, notes, or text" value={search} onChange={(event) => setSearch(event.target.value)} /></div></div>
+      <div className="workspace-head"><div><p className="eyebrow">Secure document workspace</p><h2>{cvs.length} CV versions</h2></div><div className="controls"><button className="button primary" onClick={onBuild}>Build CV for a role</button><input aria-label="Search CVs" placeholder="Search name, company, role, notes, or text" value={search} onChange={(event) => setSearch(event.target.value)} /></div></div>
       {filteredCVs.length === 0 ? <div className="empty-state"><strong>{cvs.length ? 'No matching CVs' : 'Build your CV library'}</strong><span>{cvs.length ? 'Try a different search.' : 'Upload a document, paste a text version, or use both. Your private library will follow your account to every device.'}</span>{!cvs.length && <button className="button primary" onClick={onAdd}>Add your first CV</button>}</div> : (
         <div className="cv-grid">{filteredCVs.map((cv) => (
           <article className="cv-card" key={cv.id}>
@@ -1491,6 +1607,32 @@ function CVLibrary({ cvs, busy, onAdd, onEdit, onDownload, onDelete }: { cvs: CV
         ))}</div>
       )}
     </section>
+
+    <section className="workspace-card">
+      <div className="workspace-head">
+        <div><p className="eyebrow">Reusable content</p><h2>{blocks.length} CV blocks</h2></div>
+        <button className="button secondary" onClick={onAddBlock}>+ Add block</button>
+      </div>
+      {blocks.length === 0 ? (
+        <div className="empty-state">
+          <strong>Write each part once</strong>
+          <span>Save your summary, skills, roles and qualifications as blocks. The builder combines them with your STAR stories into a CV aimed at a specific role, using only text you have written.</span>
+          <button className="button primary" onClick={onAddBlock}>Add your first block</button>
+        </div>
+      ) : (
+        <div className="cv-grid">{blocks.map((block) => (
+          <article className="cv-card" key={block.id}>
+            <div className="cv-card-head"><span className="cv-file-mark" aria-hidden="true">§</span><div><h3>{block.title}</h3><p>{CV_BLOCK_TYPE_LABELS[block.block_type]}{block.tags ? ` · ${block.tags}` : ''}</p></div></div>
+            <p className="cv-preview">{block.content.slice(0, 200)}{block.content.length > 200 ? '…' : ''}</p>
+            <div className="cv-actions">
+              <button className="button secondary" disabled={busy} onClick={() => onEditBlock(block)}>Edit</button>
+              <button className="button danger" disabled={busy} onClick={() => void onDeleteBlock(block)}>Delete</button>
+            </div>
+          </article>
+        ))}</div>
+      )}
+    </section>
+    </>
   )
 }
 
