@@ -41,8 +41,13 @@ This phase restores and improves:
 - a private per-user generation ledger and rolling 24-hour usage limit
 - a networking tracker: contacts with relationship types, their own pipeline, logged interactions, opportunity links, and follow-up reminders
 - an interview preparation workspace: a reusable STAR story library, likely topics derived locally from the job description, story ranking, a preparation checklist, research notes, and post-interview notes
+- immutable application-stage history recorded by a database trigger, with synthetic backfills excluded from duration metrics
+- a counts-first Analytics view: applications per week, response and interview rates, a stage funnel, median time to first response, results by source and CV version, and overdue follow-ups
+- opt-in server-delivered email reminders: an hourly scheduled function sends one timezone-aware daily digest of newly due application and networking follow-ups, deduplicated so nothing is emailed twice
 
-The active phase is networking and interview preparation. Professional PDF/DOCX CV output is deferred — CVs and cover letters are produced in separate tools. The following phases are analytics with server reminders, then saved searches with a daily digest.
+The active phase is analytics and server reminders. Professional PDF/DOCX CV output is deferred — CVs and cover letters are produced in separate tools. The next phase is saved searches with a daily vacancy digest.
+
+Email reminders use Resend on the server. Configure `RESEND_API_KEY` and `REMINDER_CRON_SECRET` under **Supabase Dashboard → Edge Functions → Secrets**, and create a Vault secret named `reminder_cron_secret` with the same value as `REMINDER_CRON_SECRET` so the hourly pg_cron job can authenticate to the `send-reminders` function. Without a verified sending domain, Resend's default `onboarding@resend.dev` sender only delivers to the Resend account owner's address.
 
 ## Local development
 
