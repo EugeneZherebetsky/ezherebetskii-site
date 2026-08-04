@@ -321,6 +321,52 @@ export type InterviewPrepDraft = {
  */
 export type InterviewPrepSaveResult = { prep: InterviewPrep | null } | null
 
+export const CV_BLOCK_TYPES = ['summary', 'skills', 'experience', 'achievement', 'education', 'certification', 'other'] as const
+export type CVBlockType = (typeof CV_BLOCK_TYPES)[number]
+
+export const CV_BLOCK_TYPE_LABELS: Record<CVBlockType, string> = {
+  summary: 'Profile summary',
+  skills: 'Skills',
+  experience: 'Experience',
+  achievement: 'Achievement',
+  education: 'Education',
+  certification: 'Certification',
+  other: 'Other',
+}
+
+/** Order the assembled CV uses when grouping selected blocks. */
+export const CV_BLOCK_TYPE_ORDER: CVBlockType[] = ['summary', 'skills', 'experience', 'achievement', 'education', 'certification', 'other']
+
+export type CVBlock = {
+  id: string
+  user_id: string
+  block_type: CVBlockType
+  title: string
+  content: string
+  tags: string | null
+  sort_order: number
+  created_at: string
+  updated_at: string
+  version: number
+  data: Record<string, unknown>
+}
+
+export type CVBlockDraft = {
+  block_type: CVBlockType
+  title: string
+  content: string
+  tags: string
+  sort_order: number
+}
+
+export const EMPTY_CV_BLOCK: CVBlockDraft = {
+  block_type: 'achievement',
+  title: '',
+  content: '',
+  tags: '',
+  sort_order: 0,
+}
+
 export const EMPTY_CONTACT: ContactDraft = {
   name: '',
   company: '',
