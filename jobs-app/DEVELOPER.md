@@ -190,7 +190,9 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - pg_cron invokes the `send-reminders` Edge Function hourly through `net.http_post`; the shared secret is read from Vault (`reminder_cron_secret`) at execution time and verified against the function's `REMINDER_CRON_SECRET`.
 - The function runs with the service role, gathers due application and networking follow-ups per opted-in user (lead window from `reminder_lead_hours`, overdue up to 7 days), and sends one digest email through Resend to the account's own address.
 - `reminder_deliveries` deduplicates per (user, item, next_action_at); rows are written only after Resend accepts the email, so a failed send retries at the next matching hour instead of being lost.
-- If the digest email fails to record its deliveries, the worst case is a repeated digest — never a silently missed reminder.
+- Delivery is therefore **at-least-once, not exactly-once**, and deliberately so. If Resend accepts the email but the delivery rows then fail to write, those items stay eligible and the digest repeats at the next matching hour. Do not describe this as "never emailed twice": a duplicate reminder is an accepted cost, a silently missed follow-up is not.
+- Making it exactly-once would mean reserving the delivery rows before sending and reconciling failures afterwards, which trades a repeated digest for a possible lost one. That trade has not been made.
+- The comment above `reminder_deliveries` in migration `20260804171000` still states the stronger "never emailed twice" claim. The migration is already applied and Supabase records migration statements, so it was left untouched rather than edited; correct the wording only if a later migration revisits that table.
 
 ## Important files
 
@@ -316,6 +318,7 @@ These rules come from defects already found during review. Treat them as regress
 18. **Keep user input after a failed write.** Clear a form field only once the handler confirms the record was saved. A resolved promise is not evidence of success.
 19. **Never request more rows than `api.max_rows`.** A `.limit()` above the configured cap is silently truncated; page with `.range()` until a short page arrives. With ascending order the truncation hides the newest data, which is usually the data that matters.
 20. **Bucket calendar periods by calendar keys.** Daylight-saving weeks are 167 or 169 hours long, so dividing elapsed milliseconds by a fixed week misassigns every bucket after a transition.
+21. **Claim only the guarantee the protocol actually provides.** Recording an outcome after an irreversible external action gives at-least-once behaviour, not exactly-once. Name the failure mode in both the interface and the documentation instead of promising the stronger property.
 
 ## Environment and secrets
 

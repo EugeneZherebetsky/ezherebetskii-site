@@ -89,7 +89,7 @@ Every view is reachable on mobile through the horizontal navigation strip.
 
 - Opt-in daily email digest of newly due application and networking follow-ups.
 - Delivered at an hour you choose, interpreted in your saved timezone.
-- Deduplicated so a single due action is never emailed twice.
+- A delivery log stops a due action being emailed again once its send is recorded. If that record fails to write after the email has gone out, you may receive a repeated digest — the design prefers a duplicate over a missed follow-up.
 
 ## Local development
 
