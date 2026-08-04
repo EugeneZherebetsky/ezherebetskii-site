@@ -1,19 +1,17 @@
 import { useMemo, useState } from 'react'
-import { contactMatches, lastInteractionByContact } from '../lib/networking'
+import { contactMatches } from '../lib/networking'
 import { formatDateTime, relativeDueLabel } from '../lib/opportunities'
 import {
   CONTACT_STAGES,
   CONTACT_STAGE_LABELS,
   RELATIONSHIP_LABELS,
   type Contact,
-  type ContactInteraction,
   type ContactStage,
   type Job,
 } from '../types'
 
 type ContactsViewProps = {
   contacts: Contact[]
-  interactions: ContactInteraction[]
   jobs: Job[]
   busy: boolean
   onAdd: () => void
@@ -22,10 +20,9 @@ type ContactsViewProps = {
   onStage: (contact: Contact, stage: ContactStage) => Promise<void>
 }
 
-export function ContactsView({ contacts, interactions, jobs, busy, onAdd, onEdit, onDelete, onStage }: ContactsViewProps) {
+export function ContactsView({ contacts, jobs, busy, onAdd, onEdit, onDelete, onStage }: ContactsViewProps) {
   const [search, setSearch] = useState('')
   const [stageFilter, setStageFilter] = useState<'all' | ContactStage>('all')
-  const lastInteraction = useMemo(() => lastInteractionByContact(interactions), [interactions])
   const visibleContacts = useMemo(() => contacts.filter((contact) => contactMatches(contact, search, stageFilter)), [contacts, search, stageFilter])
   const stageCounts = useMemo(() => CONTACT_STAGES.map((stage) => ({ stage, count: contacts.filter((contact) => contact.pipeline_stage === stage).length })), [contacts])
 
@@ -60,7 +57,7 @@ export function ContactsView({ contacts, interactions, jobs, busy, onAdd, onEdit
         <div className="cv-grid">
           {visibleContacts.map((contact) => {
             const linkedJob = jobs.find((job) => job.id === contact.job_id)
-            const latest = lastInteraction.get(contact.id)
+            const latest = contact.last_interaction_at
             return (
               <article className="cv-card" key={contact.id}>
                 <div className="cv-card-head">

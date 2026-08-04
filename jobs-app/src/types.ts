@@ -205,6 +205,8 @@ export type Contact = {
   updated_at: string
   version: number
   data: Record<string, unknown>
+  /** Derived client-side from the newest embedded interaction; never written to the database. */
+  last_interaction_at: string | null
 }
 
 export type ContactDraft = {
@@ -298,6 +300,13 @@ export type InterviewPrepDraft = {
   checklist: Record<string, boolean>
   post_interview_notes: string
 }
+
+/**
+ * Result of saving interview preparation: the new optimistic-lock baseline.
+ * `null` means the save failed and the previous baseline should be kept;
+ * `{ prep: null }` means the record no longer exists and the next save should insert.
+ */
+export type InterviewPrepSaveResult = { prep: InterviewPrep | null } | null
 
 export const EMPTY_CONTACT: ContactDraft = {
   name: '',

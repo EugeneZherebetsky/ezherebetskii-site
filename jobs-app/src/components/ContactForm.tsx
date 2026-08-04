@@ -26,7 +26,7 @@ type ContactFormProps = {
   interactions: ContactInteraction[]
   onCancel: () => void
   onSave: (draft: ContactDraft) => Promise<void>
-  onLogInteraction: (draft: InteractionDraft) => Promise<void>
+  onLogInteraction: (draft: InteractionDraft) => Promise<boolean>
   onDeleteInteraction: (interaction: ContactInteraction) => Promise<void>
 }
 
@@ -50,8 +50,8 @@ export function ContactForm({ initial, title, busy, error, jobs, existing, inter
       setInteractionError('Describe the interaction before logging it.')
       return
     }
-    await onLogInteraction(interactionDraft)
-    setInteractionDraft((current) => ({ ...current, summary: '' }))
+    const logged = await onLogInteraction(interactionDraft)
+    if (logged) setInteractionDraft((current) => ({ ...current, summary: '' }))
   }
 
   return (

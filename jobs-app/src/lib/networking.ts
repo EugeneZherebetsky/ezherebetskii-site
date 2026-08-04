@@ -3,7 +3,6 @@ import {
   CONTACT_STAGES,
   type Contact,
   type ContactDraft,
-  type ContactInteraction,
   type ContactRelationship,
   type ContactStage,
   type InteractionDraft,
@@ -126,15 +125,6 @@ export function contactMatches(contact: Contact, search: string, stage: 'all' | 
     contact.notes ?? '',
   ].some((value) => value.toLowerCase().includes(needle))
   return matchesStage && matchesSearch
-}
-
-export function lastInteractionByContact(interactions: ContactInteraction[]) {
-  const latest = new Map<string, string>()
-  interactions.forEach((interaction) => {
-    const current = latest.get(interaction.contact_id)
-    if (!current || interaction.occurred_at > current) latest.set(interaction.contact_id, interaction.occurred_at)
-  })
-  return latest
 }
 
 export function likelyInterviewTopics(jobDescription: string | null, limit = 12): string[] {

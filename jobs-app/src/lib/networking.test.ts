@@ -3,13 +3,12 @@ import {
   contactDraftToPayload,
   contactMatches,
   interactionDraftToPayload,
-  lastInteractionByContact,
   likelyInterviewTopics,
   prepDraftToPayload,
   rankStarStories,
   starStoryDraftToPayload,
 } from './networking'
-import { EMPTY_CONTACT, EMPTY_STAR_STORY, type Contact, type ContactInteraction, type StarStory } from '../types'
+import { EMPTY_CONTACT, EMPTY_STAR_STORY, type Contact, type StarStory } from '../types'
 
 function contact(overrides: Partial<Contact>): Contact {
   return {
@@ -31,6 +30,7 @@ function contact(overrides: Partial<Contact>): Contact {
     updated_at: '2026-08-01T10:00:00.000Z',
     version: 1,
     data: {},
+    last_interaction_at: null,
     ...overrides,
   }
 }
@@ -98,19 +98,6 @@ describe('contactMatches', () => {
   it('filters by pipeline stage', () => {
     expect(contactMatches(dana, '', 'contacted')).toBe(true)
     expect(contactMatches(dana, '', 'dormant')).toBe(false)
-  })
-})
-
-describe('lastInteractionByContact', () => {
-  it('keeps the most recent interaction per contact', () => {
-    const interactions = [
-      { contact_id: 'a', occurred_at: '2026-08-01T10:00:00.000Z' },
-      { contact_id: 'a', occurred_at: '2026-08-03T10:00:00.000Z' },
-      { contact_id: 'b', occurred_at: '2026-07-20T10:00:00.000Z' },
-    ] as ContactInteraction[]
-    const latest = lastInteractionByContact(interactions)
-    expect(latest.get('a')).toBe('2026-08-03T10:00:00.000Z')
-    expect(latest.get('b')).toBe('2026-07-20T10:00:00.000Z')
   })
 })
 

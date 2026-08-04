@@ -150,7 +150,9 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - Contacts with relationship type, company, role, email, phone, and profile link.
 - A networking pipeline (`to_contact` → `contacted` → `in_conversation` → `meeting_scheduled` → `dormant` → `closed`) separate from application status.
 - Contacts can link to an opportunity; the database verifies same-user ownership like `jobs.cv_id`.
-- Logged interactions per contact (channel, time, summary); the newest one is shown as the last interaction.
+- Logged interactions per contact (channel, time, summary). The contact list embeds only each contact's newest interaction time; the full history is loaded per contact when its editor opens, so no account-wide row limit can hide older history.
+- A failed interaction insert keeps the typed note in the form so it can be retried.
+- Interview preparation saves are optimistically locked against the record version the open draft was loaded from, not the latest Realtime state, so a background refresh cannot make a stale draft silently overwrite another device's save.
 - Next actions with due dates appear in the Reminders view and in browser notifications alongside application follow-ups.
 - Contact, interaction, story, and preparation deletions are broadcast on the private per-user channel because filtered Postgres DELETE subscriptions are unreliable.
 

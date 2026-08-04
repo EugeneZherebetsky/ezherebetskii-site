@@ -6,6 +6,7 @@ import {
   STATUS_LABELS,
   type InterviewPrep,
   type InterviewPrepDraft,
+  type InterviewPrepSaveResult,
   type Job,
   type StarStory,
 } from '../types'
@@ -15,7 +16,7 @@ type InterviewPrepViewProps = {
   preps: InterviewPrep[]
   stories: StarStory[]
   busy: boolean
-  onSavePrep: (job: Job, existing: InterviewPrep | null, draft: InterviewPrepDraft) => Promise<void>
+  onSavePrep: (job: Job, existing: InterviewPrep | null, draft: InterviewPrepDraft) => Promise<InterviewPrepSaveResult>
   onAddStory: () => void
   onEditStory: (story: StarStory) => void
   onDeleteStory: (story: StarStory) => Promise<void>
@@ -63,7 +64,7 @@ export function InterviewPrepView({ jobs, preps, stories, busy, onSavePrep, onAd
             prep={selectedPrep}
             stories={stories}
             busy={busy}
-            onSave={(draft) => onSavePrep(selectedJob, selectedPrep, draft)}
+            onSave={(existing, draft) => onSavePrep(selectedJob, existing, draft)}
           />
         )}
       </div>
@@ -99,13 +100,22 @@ export function InterviewPrepView({ jobs, preps, stories, busy, onSavePrep, onAd
   )
 }
 
-function PrepPanel({ job, prep, stories, busy, onSave }: { job: Job; prep: InterviewPrep | null; stories: StarStory[]; busy: boolean; onSave: (draft: InterviewPrepDraft) => Promise<void> }) {
+function PrepPanel({ job, prep, stories, busy, onSave }: { job: Job; prep: InterviewPrep | null; stories: StarStory[]; busy: boolean; onSave: (existing: InterviewPrep | null, draft: InterviewPrepDraft) => Promise<InterviewPrepSaveResult> }) {
   const [draft, setDraft] = useState<InterviewPrepDraft>(() => prepToDraft(prep))
+  // The optimistic-lock baseline stays bound to the record this draft was loaded
+  // from, not the live prop, so a Realtime refresh cannot silently raise the
+  // expected version underneath unsaved edits.
+  const [basePrep, setBasePrep] = useState<InterviewPrep | null>(prep)
   const topics = useMemo(() => likelyInterviewTopics(job.job_description), [job.job_description])
   const rankedStories = useMemo(() => rankStarStories(stories, job.job_description).slice(0, 3), [stories, job.job_description])
 
   function toggleChecklist(key: string) {
     setDraft((current) => ({ ...current, checklist: { ...current.checklist, [key]: !current.checklist[key] } }))
+  }
+
+  async function save() {
+    const result = await onSave(basePrep, draft)
+    if (result) setBasePrep(result.prep)
   }
 
   return (
@@ -149,7 +159,7 @@ function PrepPanel({ job, prep, stories, busy, onSave }: { job: Job; prep: Inter
       <label>Post-interview notes<textarea rows={4} value={draft.post_interview_notes} placeholder="What was asked, how it went, agreed next steps. Remember the thank-you message." onChange={(event) => setDraft({ ...draft, post_interview_notes: event.target.value })} /></label>
 
       <div className="button-row">
-        <button className="button primary" disabled={busy} onClick={() => void onSave(draft)}>{busy ? 'Saving…' : 'Save preparation'}</button>
+        <button className="button primary" disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save preparation'}</button>
       </div>
     </section>
   )

@@ -46,6 +46,7 @@ import {
   type InteractionDraft,
   type InterviewPrep,
   type InterviewPrepDraft,
+  type InterviewPrepSaveResult,
   type Job,
   type JobDraft,
   type JobStatus,
@@ -178,7 +179,7 @@ export function Workspace({ session }: WorkspaceProps) {
   const [cvs, setCVs] = useState<CV[]>([])
   const [applicationSends, setApplicationSends] = useState<ApplicationSend[]>([])
   const [contacts, setContacts] = useState<Contact[]>([])
-  const [contactInteractions, setContactInteractions] = useState<ContactInteraction[]>([])
+  const [contactHistory, setContactHistory] = useState<ContactInteraction[]>([])
   const [starStories, setStarStories] = useState<StarStory[]>([])
   const [interviewPreps, setInterviewPreps] = useState<InterviewPrep[]>([])
   const [settings, setSettings] = useState<UserSettings | null>(null)
@@ -220,13 +221,15 @@ export function Workspace({ session }: WorkspaceProps) {
   }
 
   const loadWorkspace = useCallback(async () => {
-    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, interactionsResult, storiesResult, prepsResult] = await Promise.all([
+    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, storiesResult, prepsResult] = await Promise.all([
       supabase.from('jobs').select('*').order('updated_at', { ascending: false }),
       supabase.from('cvs').select('*').order('updated_at', { ascending: false }),
       supabase.from('user_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
       supabase.from('application_sends').select('*').order('sent_at', { ascending: false }).limit(500),
-      supabase.from('contacts').select('*').order('updated_at', { ascending: false }),
-      supabase.from('contact_interactions').select('*').order('occurred_at', { ascending: false }).limit(2000),
+      supabase.from('contacts').select('*, contact_interactions(occurred_at)')
+        .order('updated_at', { ascending: false })
+        .order('occurred_at', { referencedTable: 'contact_interactions', ascending: false })
+        .limit(1, { referencedTable: 'contact_interactions' }),
       supabase.from('star_stories').select('*').order('updated_at', { ascending: false }),
       supabase.from('interview_preps').select('*'),
     ])
@@ -241,10 +244,13 @@ export function Workspace({ session }: WorkspaceProps) {
     else setApplicationSends((sendsResult.data ?? []) as ApplicationSend[])
 
     if (contactsResult.error) setError(contactsResult.error.message)
-    else setContacts((contactsResult.data ?? []) as Contact[])
-
-    if (interactionsResult.error) setError(interactionsResult.error.message)
-    else setContactInteractions((interactionsResult.data ?? []) as ContactInteraction[])
+    else {
+      const contactRows = (contactsResult.data ?? []) as Array<Omit<Contact, 'last_interaction_at'> & { contact_interactions?: Array<{ occurred_at: string }> }>
+      setContacts(contactRows.map(({ contact_interactions: latestInteraction, ...contact }) => ({
+        ...contact,
+        last_interaction_at: latestInteraction?.[0]?.occurred_at ?? null,
+      })))
+    }
 
     if (storiesResult.error) setError(storiesResult.error.message)
     else setStarStories((storiesResult.data ?? []) as StarStory[])
@@ -269,6 +275,34 @@ export function Workspace({ session }: WorkspaceProps) {
     setLoading(false)
   }, [session.user.id])
 
+  const editingContactId = editingContact && editingContact !== 'new' ? editingContact.id : null
+  const editingContactIdRef = useRef<string | null>(null)
+
+  const loadContactHistory = useCallback(async (contactId: string) => {
+    const { data, error: historyError } = await supabase
+      .from('contact_interactions')
+      .select('*')
+      .eq('contact_id', contactId)
+      .order('occurred_at', { ascending: false })
+    if (historyError) setError(historyError.message)
+    else setContactHistory((data ?? []) as ContactInteraction[])
+  }, [])
+
+  useEffect(() => {
+    editingContactIdRef.current = editingContactId
+    if (!editingContactId) {
+      setContactHistory([])
+      return
+    }
+    void loadContactHistory(editingContactId)
+  }, [editingContactId, loadContactHistory])
+
+  const refreshNetworkingData = useCallback(() => {
+    void loadWorkspace()
+    const activeContactId = editingContactIdRef.current
+    if (activeContactId) void loadContactHistory(activeContactId)
+  }, [loadContactHistory, loadWorkspace])
+
   useEffect(() => {
     void loadWorkspace()
     let disposed = false
@@ -283,13 +317,13 @@ export function Workspace({ session }: WorkspaceProps) {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('broadcast', { event: 'cv_deleted' }, () => void loadWorkspace())
-        .on('broadcast', { event: 'record_deleted' }, () => void loadWorkspace())
+        .on('broadcast', { event: 'record_deleted' }, () => refreshNetworkingData())
         .on('postgres_changes', { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'application_sends', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'contacts', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'contacts', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'contact_interactions', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'contact_interactions', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'contact_interactions', filter: `user_id=eq.${session.user.id}` }, () => refreshNetworkingData())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'contact_interactions', filter: `user_id=eq.${session.user.id}` }, () => refreshNetworkingData())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'star_stories', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'star_stories', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'interview_preps', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
@@ -304,7 +338,7 @@ export function Workspace({ session }: WorkspaceProps) {
       disposed = true
       if (channel) void supabase.removeChannel(channel)
     }
-  }, [loadWorkspace, session.access_token, session.user.id])
+  }, [loadWorkspace, refreshNetworkingData, session.access_token, session.user.id])
 
   useEffect(() => {
     setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
@@ -597,18 +631,24 @@ export function Workspace({ session }: WorkspaceProps) {
     setBusy(false)
   }
 
-  async function logInteraction(draft: InteractionDraft) {
-    if (!editingContact || editingContact === 'new') return
+  async function logInteraction(draft: InteractionDraft): Promise<boolean> {
+    if (!editingContact || editingContact === 'new') return false
+    const contactId = editingContact.id
     setBusy(true)
     setError('')
     setNotice('')
     const { error: insertError } = await supabase
       .from('contact_interactions')
-      .insert({ ...interactionDraftToPayload(draft, editingContact.id), user_id: session.user.id })
-    if (insertError) setError(insertError.message)
-    else setNotice('Interaction logged and synchronized.')
+      .insert({ ...interactionDraftToPayload(draft, contactId), user_id: session.user.id })
+    const logged = !insertError
+    if (insertError) setError(`${insertError.message} Your interaction note is kept so you can retry.`)
+    else {
+      setNotice('Interaction logged and synchronized.')
+      await loadContactHistory(contactId)
+    }
     await loadWorkspace()
     setBusy(false)
+    return logged
   }
 
   async function deleteInteraction(interaction: ContactInteraction) {
@@ -618,6 +658,7 @@ export function Workspace({ session }: WorkspaceProps) {
     const { data, error: deleteError } = await supabase.from('contact_interactions').delete().eq('id', interaction.id).eq('version', interaction.version).select('id').maybeSingle()
     if (deleteError) setError(deleteError.message)
     else if (!data) setError('This interaction changed or was removed on another device. The latest history has been loaded.')
+    await loadContactHistory(interaction.contact_id)
     await loadWorkspace()
     setBusy(false)
   }
@@ -664,10 +705,15 @@ export function Workspace({ session }: WorkspaceProps) {
     setBusy(false)
   }
 
-  async function saveInterviewPrep(job: Job, existingPrep: InterviewPrep | null, draft: InterviewPrepDraft) {
+  // Returns the next optimistic-lock baseline for the preparation panel: the
+  // saved row on success, the latest row after a conflict (so a reviewed
+  // second save can proceed), { prep: null } when the record no longer exists,
+  // or null on failures that should keep the previous baseline.
+  async function saveInterviewPrep(job: Job, existingPrep: InterviewPrep | null, draft: InterviewPrepDraft): Promise<InterviewPrepSaveResult> {
     setBusy(true)
     setError('')
     setNotice('')
+    let result: InterviewPrepSaveResult = null
     const payload = prepDraftToPayload(draft)
     if (existingPrep) {
       const { data, error: updateError } = await supabase
@@ -675,21 +721,48 @@ export function Workspace({ session }: WorkspaceProps) {
         .update(payload)
         .eq('id', existingPrep.id)
         .eq('version', existingPrep.version)
-        .select('id')
+        .select('*')
         .maybeSingle()
       if (updateError) setError(updateError.message)
-      else if (!data) setError('This preparation changed on another device. The latest version has been loaded; review it, then save again.')
-      else setNotice('Interview preparation saved and synchronized.')
+      else if (!data) {
+        const { data: latest, error: latestError } = await supabase.from('interview_preps').select('*').eq('id', existingPrep.id).maybeSingle()
+        if (latestError) setError(latestError.message)
+        else if (!latest) {
+          result = { prep: null }
+          setError('This preparation was removed on another device. Your edits remain open; saving again will recreate it.')
+        } else {
+          result = { prep: latest as InterviewPrep }
+          setError('This preparation changed on another device. Your edits remain open. Review them, then save again.')
+        }
+      }
+      else {
+        result = { prep: data as InterviewPrep }
+        setNotice('Interview preparation saved and synchronized.')
+      }
     } else {
-      const { error: insertError } = await supabase
+      const { data, error: insertError } = await supabase
         .from('interview_preps')
         .insert({ ...payload, user_id: session.user.id, job_id: job.id })
-      if (insertError?.code === '23505') setError('Preparation for this interview was started on another device. The latest version has been loaded; review it, then save again.')
+        .select('*')
+        .maybeSingle()
+      if (insertError?.code === '23505') {
+        const { data: latest, error: latestError } = await supabase.from('interview_preps').select('*').eq('job_id', job.id).maybeSingle()
+        if (latestError) setError(latestError.message)
+        else {
+          result = { prep: (latest as InterviewPrep | null) ?? null }
+          setError('Preparation for this interview was started on another device. Your edits remain open. Review them, then save again.')
+        }
+      }
       else if (insertError) setError(insertError.message)
-      else setNotice('Interview preparation saved and synchronized.')
+      else if (!data) setError('The preparation could not be saved. Please try again.')
+      else {
+        result = { prep: data as InterviewPrep }
+        setNotice('Interview preparation saved and synchronized.')
+      }
     }
     await loadWorkspace()
     setBusy(false)
+    return result
   }
 
   async function saveSettings(draft: SettingsDraft) {
@@ -1273,7 +1346,7 @@ export function Workspace({ session }: WorkspaceProps) {
               {view === 'board' && <BoardView jobs={jobs} cvs={cvs} busy={busy} onEdit={openEditor} onStatus={changeStatus} onCV={changeJobCV} />}
               {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} sends={applicationSends} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onTailor={(job) => { setError(''); setNotice(''); setTailoringJob(job) }} onDelete={deleteJob} onDownloadCV={downloadCV} />}
               {view === 'reminders' && <RemindersView jobs={reminders} contacts={contactReminders} onEdit={openEditor} onEditContact={(contact) => { setError(''); setEditingContact(contact) }} onEnable={enableNotifications} />}
-              {view === 'contacts' && <ContactsView contacts={contacts} interactions={contactInteractions} jobs={jobs} busy={busy} onAdd={() => { setError(''); setEditingContact('new') }} onEdit={(contact) => { setError(''); setEditingContact(contact) }} onDelete={deleteContact} onStage={changeContactStage} />}
+              {view === 'contacts' && <ContactsView contacts={contacts} jobs={jobs} busy={busy} onAdd={() => { setError(''); setEditingContact('new') }} onEdit={(contact) => { setError(''); setEditingContact(contact) }} onDelete={deleteContact} onStage={changeContactStage} />}
               {view === 'interviews' && <InterviewPrepView jobs={jobs} preps={interviewPreps} stories={starStories} busy={busy} onSavePrep={saveInterviewPrep} onAddStory={() => { setError(''); setEditingStar('new') }} onEditStory={(story) => { setError(''); setEditingStar(story) }} onDeleteStory={deleteStarStory} />}
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
               {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} googleConnected={googleConnected} onSave={saveSettings} onConnectGoogle={connectGoogle} onEnableNotifications={enableNotifications} />}
@@ -1285,7 +1358,7 @@ export function Workspace({ session }: WorkspaceProps) {
       </div>
 
       {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onTailor={saveAndOpenTailoring} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
-      {editingContact && <ContactForm initial={editingContact === 'new' ? EMPTY_CONTACT : contactToDraft(editingContact)} title={editingContact === 'new' ? 'Add a contact' : 'Update contact'} busy={busy} error={error} jobs={jobs} existing={editingContact !== 'new'} interactions={editingContact === 'new' ? [] : contactInteractions.filter((interaction) => interaction.contact_id === editingContact.id)} onCancel={() => { setError(''); setEditingContact(null) }} onSave={saveContact} onLogInteraction={logInteraction} onDeleteInteraction={deleteInteraction} />}
+      {editingContact && <ContactForm initial={editingContact === 'new' ? EMPTY_CONTACT : contactToDraft(editingContact)} title={editingContact === 'new' ? 'Add a contact' : 'Update contact'} busy={busy} error={error} jobs={jobs} existing={editingContact !== 'new'} interactions={editingContact === 'new' ? [] : contactHistory} onCancel={() => { setError(''); setEditingContact(null) }} onSave={saveContact} onLogInteraction={logInteraction} onDeleteInteraction={deleteInteraction} />}
       {editingStar && <StarStoryForm initial={editingStar === 'new' ? EMPTY_STAR_STORY : starStoryToDraft(editingStar)} title={editingStar === 'new' ? 'Add a STAR story' : 'Update STAR story'} busy={busy} error={error} onCancel={() => { setError(''); setEditingStar(null) }} onSave={saveStarStory} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
       {tailoringJob && <TailorCV job={tailoringJob} cvs={cvs} busy={busy} actionError={error} actionNotice={notice} onClose={() => { setError(''); setTailoringJob(null) }} onSaveCV={saveTailoredCV} onUseCoverLetter={useTailoredCoverLetter} />}
