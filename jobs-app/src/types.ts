@@ -36,7 +36,7 @@ export type WorkMode = (typeof WORK_MODES)[number]
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const
 export type JobPriority = (typeof PRIORITIES)[number]
 
-export const APP_VIEWS = ['dashboard', 'board', 'applications', 'reminders', 'contacts', 'interviews', 'cvs', 'search', 'backup', 'settings'] as const
+export const APP_VIEWS = ['dashboard', 'board', 'applications', 'reminders', 'contacts', 'interviews', 'analytics', 'cvs', 'search', 'backup', 'settings'] as const
 export type AppView = (typeof APP_VIEWS)[number]
 export type DefaultView = Extract<AppView, 'dashboard' | 'board' | 'applications' | 'reminders' | 'cvs'>
 
@@ -141,13 +141,26 @@ export type UserSettings = {
   reminder_lead_hours: number
   timezone: string
   google_client_id: string | null
+  email_reminders_enabled: boolean
+  email_reminder_hour: number
   created_at: string
   updated_at: string
   version: number
 }
 
-export type SettingsDraft = Pick<UserSettings, 'default_view' | 'reminders_enabled' | 'reminder_lead_hours' | 'timezone'> & {
+export type SettingsDraft = Pick<UserSettings, 'default_view' | 'reminders_enabled' | 'reminder_lead_hours' | 'timezone' | 'email_reminders_enabled' | 'email_reminder_hour'> & {
   google_client_id: string
+}
+
+export type JobStageEvent = {
+  id: string
+  user_id: string
+  job_id: string
+  from_status: JobStatus | null
+  to_status: JobStatus
+  event_type: 'created' | 'status_change' | 'backfill_current_state'
+  occurred_at: string
+  details: Record<string, unknown>
 }
 
 export const CONTACT_RELATIONSHIPS = ['recruiter', 'referral', 'hiring_manager', 'colleague', 'friend', 'other'] as const

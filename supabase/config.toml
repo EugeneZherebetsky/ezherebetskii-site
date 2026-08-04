@@ -385,6 +385,11 @@ deno_version = 2
 [functions.tailor-cv]
 verify_jwt = false
 
+[functions.send-reminders]
+# Invoked by pg_cron, not the browser; the function enforces its own shared
+# secret (REMINDER_CRON_SECRET) instead of a user JWT.
+verify_jwt = false
+
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
