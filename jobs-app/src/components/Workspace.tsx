@@ -813,24 +813,32 @@ export function Workspace({ session }: WorkspaceProps) {
       return
     }
 
-    if (built.job && built.linkToJob) {
-      const { data: linked, error: linkError } = await supabase
-        .from('jobs')
-        .update({ cv_id: cvId })
-        .eq('id', built.job.id)
-        .eq('version', built.job.version)
-        .select('id')
-        .maybeSingle()
-      if (linkError) setError(`The CV was saved, but could not be linked: ${linkError.message}`)
-      else if (!linked) setError('The CV was saved, but this application changed on another device. Open it and link the new CV manually.')
-      else {
-        setBuildingCV(false)
-        setNotice('CV built, saved to your library, and linked to the application.')
-      }
-    } else {
-      setBuildingCV(false)
+    // The CV now exists. Every path below closes the builder so that a failed
+    // link cannot be retried as a whole save, which would insert a second
+    // identical CV under a fresh id. Linking is recoverable from the
+    // application's own "CV used" selector.
+    setBuildingCV(false)
+
+    if (!built.job || !built.linkToJob) {
       setNotice('CV built and saved to your library.')
+      await loadWorkspace()
+      setBusy(false)
+      return
     }
+
+    const { data: linked, error: linkError } = await supabase
+      .from('jobs')
+      .update({ cv_id: cvId })
+      .eq('id', built.job.id)
+      .eq('version', built.job.version)
+      .select('id')
+      .maybeSingle()
+
+    const linkTarget = `${built.job.role_title} at ${built.job.company}`
+    if (linkError) setError(`“${built.name}” was saved to your CV library, but linking it to ${linkTarget} failed: ${linkError.message} Open that application and choose it under “CV used”. Do not build it again.`)
+    else if (!linked) setError(`“${built.name}” was saved to your CV library, but ${linkTarget} changed on another device, so it was not linked. Open that application and choose the CV under “CV used”. Do not build it again.`)
+    else setNotice('CV built, saved to your library, and linked to the application.')
+
     await loadWorkspace()
     setBusy(false)
   }

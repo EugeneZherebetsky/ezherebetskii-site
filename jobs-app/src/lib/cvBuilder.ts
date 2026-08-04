@@ -29,6 +29,8 @@ export type BuilderItem = {
   text: string
   /** Requirement keywords this item actually contains. */
   matched: string[]
+  /** The block's saved order within its section. Stories carry 0. */
+  sortOrder: number
 }
 
 export function blockToDraft(block: CVBlock): CVBlockDraft {
@@ -101,6 +103,7 @@ export function buildCandidates(blocks: CVBlock[], stories: StarStory[], jobDesc
     blockType: block.block_type,
     text: block.content,
     matched: matchedRequirements(`${block.title}\n${block.content}\n${block.tags ?? ''}`, requirements),
+    sortOrder: block.sort_order,
   }))
   const storyItems: BuilderItem[] = stories.map((story) => ({
     kind: 'story',
@@ -109,17 +112,25 @@ export function buildCandidates(blocks: CVBlock[], stories: StarStory[], jobDesc
     blockType: 'achievement',
     text: storyBullet(story),
     matched: matchedRequirements(starStorySearchText(story), requirements),
+    sortOrder: 0,
   }))
   return [...blockItems, ...storyItems].sort((left, right) =>
     right.matched.length - left.matched.length
     || left.title.localeCompare(right.title))
 }
 
-/** Groups selected items into CV sections, preserving the given order within each. */
+/**
+ * Groups selected items into CV sections. Within a section the saved block
+ * order wins, because relevance ranking is only how the picker is sorted and
+ * says nothing about how a CV should read. Titles break ties so assembly is
+ * deterministic.
+ */
 export function assembleCVText(items: BuilderItem[]): string {
   const sections: string[] = []
   CV_BLOCK_TYPE_ORDER.forEach((blockType) => {
-    const inSection = items.filter((item) => item.blockType === blockType && item.text.trim())
+    const inSection = items
+      .filter((item) => item.blockType === blockType && item.text.trim())
+      .sort((left, right) => left.sortOrder - right.sortOrder || left.title.localeCompare(right.title))
     if (!inSection.length) return
     const lines = inSection.map((item) => (
       item.kind === 'story' || blockType === 'achievement'

@@ -186,6 +186,10 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - Ranking is by how many role requirements an item actually contains, and the matched keywords are shown, so the order is explainable rather than a black-box score.
 - Coverage shows which requirements the current selection evidences and which it does not. Missing terms are a prompt to add a block the user genuinely has, never a score, and the interface says so.
 - The assembled preview follows the selection until it is edited by hand, then stops overwriting and offers an explicit rebuild instead.
+- The target application is captured when it is chosen and held until the target changes, so a Realtime reload cannot raise its version and let the CV link pass an optimistic-lock check against a change the builder never saw.
+- Changing the target role clears the selection, the assembled text, and the auto-filled name, with confirmation when there is work to lose. Everything on screen belongs to one role.
+- Relevance ranking orders the picker only. Assembly within a section uses the saved block order, with titles breaking ties, because how a CV should read is not the same question as which block matched most words.
+- Once the CV row is inserted the builder closes on every path, including a failed link. Retrying a whole save would insert a second identical CV under a fresh id, so a link failure instead names the application and asks the user to link it from the application's own CV selector.
 - Saving creates a new text CV in the library and never overwrites an existing one. When the target was an application, the CV can be linked to it with the same optimistic-lock handling used by AI tailoring.
 - Deleting a block does not alter CVs already built from it, because assembly copies text rather than referencing it.
 
@@ -343,7 +347,8 @@ These rules come from defects already found during review. Treat them as regress
 18. **Keep user input after a failed write.** Clear a form field only once the handler confirms the record was saved. A resolved promise is not evidence of success.
 19. **Never request more rows than `api.max_rows`.** A `.limit()` above the configured cap is silently truncated; page with `.range()` until a short page arrives. With ascending order the truncation hides the newest data, which is usually the data that matters.
 20. **Bucket calendar periods by calendar keys.** Daylight-saving weeks are 167 or 169 hours long, so dividing elapsed milliseconds by a fixed week misassigns every bucket after a transition.
-21. **Claim only the guarantee the protocol actually provides.** Recording an outcome after an irreversible external action gives at-least-once behaviour, not exactly-once. Name the failure mode in both the interface and the documentation instead of promising the stronger property.
+21. **Never offer a retry that repeats a step which already succeeded.** After a multi-step save, the failure message must name the step that failed and the recovery path for it. Re-running the whole action duplicates the committed record.
+22. **Claim only the guarantee the protocol actually provides.** Recording an outcome after an irreversible external action gives at-least-once behaviour, not exactly-once. Name the failure mode in both the interface and the documentation instead of promising the stronger property.
 
 ## Environment and secrets
 

@@ -94,6 +94,7 @@ describe('buildCandidates', () => {
     const candidates = buildCandidates(blocks, stories, jobDescription)
 
     expect(candidates[0].id).toBe('b1')
+    expect(candidates[0].sortOrder).toBe(0)
     expect(candidates[0].matched).toEqual(expect.arrayContaining(['kubernetes', 'terraform', 'governance']))
     expect(candidates.find((item) => item.id === 's1')?.matched).toContain('kubernetes')
     expect(candidates.find((item) => item.id === 'b2')?.matched).toEqual([])
@@ -122,9 +123,9 @@ describe('buildCandidates', () => {
 
 describe('assembleCVText', () => {
   const items: BuilderItem[] = [
-    { kind: 'story', id: 's1', title: 'Story', blockType: 'achievement', text: 'Led the split — delivered on time.', matched: [] },
-    { kind: 'block', id: 'b1', title: 'Summary', blockType: 'summary', text: 'IT leader with twenty years of delivery.', matched: [] },
-    { kind: 'block', id: 'b2', title: 'Skills', blockType: 'skills', text: 'Kubernetes, Terraform', matched: [] },
+    { kind: 'story', id: 's1', title: 'Story', blockType: 'achievement', text: 'Led the split — delivered on time.', matched: [], sortOrder: 0 },
+    { kind: 'block', id: 'b1', title: 'Summary', blockType: 'summary', text: 'IT leader with twenty years of delivery.', matched: [], sortOrder: 0 },
+    { kind: 'block', id: 'b2', title: 'Skills', blockType: 'skills', text: 'Kubernetes, Terraform', matched: [], sortOrder: 0 },
   ]
 
   it('groups sections in CV order regardless of selection order', () => {
@@ -144,6 +145,24 @@ describe('assembleCVText', () => {
   it('returns an empty string when nothing is selected', () => {
     expect(assembleCVText([])).toBe('')
   })
+
+  it('orders a section by saved block order rather than by how it was ranked', () => {
+    const ranked: BuilderItem[] = [
+      { kind: 'block', id: 'b1', title: 'Most relevant', blockType: 'skills', text: 'Second line', matched: ['kubernetes'], sortOrder: 20 },
+      { kind: 'block', id: 'b2', title: 'Less relevant', blockType: 'skills', text: 'First line', matched: [], sortOrder: 10 },
+    ]
+    const text = assembleCVText(ranked)
+    expect(text.indexOf('First line')).toBeLessThan(text.indexOf('Second line'))
+  })
+
+  it('breaks equal order by title so assembly is deterministic', () => {
+    const tied: BuilderItem[] = [
+      { kind: 'block', id: 'b1', title: 'Zulu', blockType: 'skills', text: 'Zulu line', matched: [], sortOrder: 5 },
+      { kind: 'block', id: 'b2', title: 'Alpha', blockType: 'skills', text: 'Alpha line', matched: [], sortOrder: 5 },
+    ]
+    const text = assembleCVText(tied)
+    expect(text.indexOf('Alpha line')).toBeLessThan(text.indexOf('Zulu line'))
+  })
 })
 
 describe('coverageReport', () => {
@@ -151,7 +170,7 @@ describe('coverageReport', () => {
 
   it('separates the requirements the selection evidences from those it does not', () => {
     const selected: BuilderItem[] = [
-      { kind: 'block', id: 'b1', title: 'Skills', blockType: 'skills', text: 'Kubernetes and governance', matched: [] },
+      { kind: 'block', id: 'b1', title: 'Skills', blockType: 'skills', text: 'Kubernetes and governance', matched: [], sortOrder: 0 },
     ]
     const report = coverageReport(selected, jobDescription)
     expect(report.covered).toContain('kubernetes')

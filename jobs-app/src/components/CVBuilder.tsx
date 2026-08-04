@@ -35,7 +35,11 @@ export function CVBuilder({ jobs, blocks, stories, busy, error, notice, onClose,
     () => jobs.filter((job) => job.job_description?.trim()).sort((left, right) => left.company.localeCompare(right.company)),
     [jobs],
   )
-  const [jobId, setJobId] = useState('')
+  // The target is captured when it is chosen, not read from the live jobs
+  // list. A Realtime reload would otherwise swap in a newer row and version,
+  // and the CV link would then pass the optimistic-lock check against a change
+  // this builder never saw.
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [pasted, setPasted] = useState('')
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
   const [draftText, setDraftText] = useState('')
@@ -44,8 +48,8 @@ export function CVBuilder({ jobs, blocks, stories, busy, error, notice, onClose,
   const [linkToJob, setLinkToJob] = useState(true)
   const [validationError, setValidationError] = useState('')
 
-  const selectedJob = targetableJobs.find((job) => job.id === jobId) ?? null
   const jobDescription = selectedJob?.job_description ?? (pasted.trim() || null)
+  const targetMissing = Boolean(selectedJob) && !targetableJobs.some((job) => job.id === selectedJob?.id)
 
   const requirements = useMemo(() => roleRequirements(jobDescription), [jobDescription])
   const candidates = useMemo(() => buildCandidates(blocks, stories, jobDescription), [blocks, stories, jobDescription])
@@ -65,6 +69,23 @@ export function CVBuilder({ jobs, blocks, stories, busy, error, notice, onClose,
   useEffect(() => {
     if (selectedJob && !name.trim()) setName(`${selectedJob.company} — ${selectedJob.role_title}`)
   }, [name, selectedJob])
+
+  /**
+   * Everything on screen belongs to one target role, so switching targets
+   * clears the selection, the assembled text, and the auto-filled name. Work
+   * that would be lost is confirmed first.
+   */
+  function changeTarget(nextJob: Job | null) {
+    const hasWork = selectedKeys.size > 0 || (edited && draftText.trim().length > 0)
+    if (hasWork && !window.confirm('Changing the target role clears the current selection and the assembled text. Continue?')) return
+    setSelectedJob(nextJob)
+    setSelectedKeys(new Set())
+    setDraftText('')
+    setEdited(false)
+    setName('')
+    setValidationError('')
+    if (nextJob) setPasted('')
+  }
 
   function toggle(item: BuilderItem) {
     const key = itemKey(item)
@@ -111,15 +132,20 @@ export function CVBuilder({ jobs, blocks, stories, busy, error, notice, onClose,
         <div className="builder-body">
           <section className="builder-target">
             <label>Target role
-              <select value={jobId} onChange={(event) => { setJobId(event.target.value); setSelectedKeys(new Set()) }}>
+              <select
+                value={selectedJob?.id ?? ''}
+                onChange={(event) => changeTarget(targetableJobs.find((job) => job.id === event.target.value) ?? null)}
+              >
                 <option value="">Paste requirements instead</option>
+                {targetMissing && selectedJob && <option value={selectedJob.id}>{selectedJob.role_title} · {selectedJob.company}</option>}
                 {targetableJobs.map((job) => <option key={job.id} value={job.id}>{job.role_title} · {job.company}</option>)}
               </select>
               <small>{targetableJobs.length ? 'Only applications that have a job description are listed.' : 'No application has a job description yet, so paste the requirements below.'}</small>
             </label>
+            {targetMissing && <p className="builder-stale full" role="status">This application changed or was removed elsewhere. The builder is still working from the version you selected; saving will report a conflict rather than overwrite it.</p>}
             {!selectedJob && (
               <label className="full">Role requirements
-                <textarea rows={4} value={pasted} placeholder="Paste the job description or the requirements section." onChange={(event) => { setPasted(event.target.value); setSelectedKeys(new Set()) }} />
+                <textarea rows={4} value={pasted} placeholder="Paste the job description or the requirements section." onChange={(event) => setPasted(event.target.value)} />
               </label>
             )}
             {requirements.length > 0 && (
