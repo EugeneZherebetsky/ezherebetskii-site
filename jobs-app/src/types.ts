@@ -36,7 +36,7 @@ export type WorkMode = (typeof WORK_MODES)[number]
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const
 export type JobPriority = (typeof PRIORITIES)[number]
 
-export const APP_VIEWS = ['dashboard', 'board', 'applications', 'reminders', 'cvs', 'search', 'backup', 'settings'] as const
+export const APP_VIEWS = ['dashboard', 'board', 'applications', 'reminders', 'contacts', 'interviews', 'cvs', 'search', 'backup', 'settings'] as const
 export type AppView = (typeof APP_VIEWS)[number]
 export type DefaultView = Extract<AppView, 'dashboard' | 'board' | 'applications' | 'reminders' | 'cvs'>
 
@@ -148,6 +148,187 @@ export type UserSettings = {
 
 export type SettingsDraft = Pick<UserSettings, 'default_view' | 'reminders_enabled' | 'reminder_lead_hours' | 'timezone'> & {
   google_client_id: string
+}
+
+export const CONTACT_RELATIONSHIPS = ['recruiter', 'referral', 'hiring_manager', 'colleague', 'friend', 'other'] as const
+export type ContactRelationship = (typeof CONTACT_RELATIONSHIPS)[number]
+
+export const RELATIONSHIP_LABELS: Record<ContactRelationship, string> = {
+  recruiter: 'Recruiter',
+  referral: 'Referral',
+  hiring_manager: 'Hiring manager',
+  colleague: 'Colleague',
+  friend: 'Friend',
+  other: 'Other',
+}
+
+export const CONTACT_STAGES = ['to_contact', 'contacted', 'in_conversation', 'meeting_scheduled', 'dormant', 'closed'] as const
+export type ContactStage = (typeof CONTACT_STAGES)[number]
+
+export const CONTACT_STAGE_LABELS: Record<ContactStage, string> = {
+  to_contact: 'To contact',
+  contacted: 'Contacted',
+  in_conversation: 'In conversation',
+  meeting_scheduled: 'Meeting scheduled',
+  dormant: 'Dormant',
+  closed: 'Closed',
+}
+
+export const INTERACTION_CHANNELS = ['email', 'call', 'linkedin', 'meeting', 'message', 'other'] as const
+export type InteractionChannel = (typeof INTERACTION_CHANNELS)[number]
+
+export const INTERACTION_CHANNEL_LABELS: Record<InteractionChannel, string> = {
+  email: 'Email',
+  call: 'Call',
+  linkedin: 'LinkedIn',
+  meeting: 'Meeting',
+  message: 'Message',
+  other: 'Other',
+}
+
+export type Contact = {
+  id: string
+  user_id: string
+  name: string
+  company: string | null
+  role_title: string | null
+  email: string | null
+  phone: string | null
+  linkedin_url: string | null
+  relationship: ContactRelationship
+  pipeline_stage: ContactStage
+  job_id: string | null
+  next_action: string | null
+  next_action_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  version: number
+  data: Record<string, unknown>
+}
+
+export type ContactDraft = {
+  name: string
+  company: string
+  role_title: string
+  email: string
+  phone: string
+  linkedin_url: string
+  relationship: ContactRelationship
+  pipeline_stage: ContactStage
+  job_id: string
+  next_action: string
+  next_action_at: string
+  notes: string
+}
+
+export type ContactInteraction = {
+  id: string
+  user_id: string
+  contact_id: string
+  occurred_at: string
+  channel: InteractionChannel
+  summary: string
+  created_at: string
+  updated_at: string
+  version: number
+  data: Record<string, unknown>
+}
+
+export type InteractionDraft = {
+  occurred_at: string
+  channel: InteractionChannel
+  summary: string
+}
+
+export type StarStory = {
+  id: string
+  user_id: string
+  title: string
+  situation: string | null
+  task: string | null
+  action: string | null
+  result: string | null
+  skills: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  version: number
+  data: Record<string, unknown>
+}
+
+export type StarStoryDraft = {
+  title: string
+  situation: string
+  task: string
+  action: string
+  result: string
+  skills: string
+  notes: string
+}
+
+export const PREP_CHECKLIST: Array<{ key: string; label: string }> = [
+  { key: 'research_company', label: 'Research the company, product, and recent news' },
+  { key: 'reread_description', label: 'Re-read the job description and match your evidence' },
+  { key: 'star_examples', label: 'Choose STAR examples for the likely topics' },
+  { key: 'questions', label: 'Prepare questions to ask the interviewers' },
+  { key: 'logistics', label: 'Confirm the time, video link or route, and interviewer names' },
+  { key: 'cv_review', label: 'Re-read the CV version that was sent' },
+  { key: 'salary', label: 'Prepare answers on salary expectations and availability' },
+  { key: 'thank_you', label: 'Send a thank-you message after the interview' },
+]
+
+export type InterviewPrep = {
+  id: string
+  user_id: string
+  job_id: string
+  research_notes: string | null
+  questions_to_ask: string | null
+  checklist: Record<string, boolean>
+  post_interview_notes: string | null
+  created_at: string
+  updated_at: string
+  version: number
+  data: Record<string, unknown>
+}
+
+export type InterviewPrepDraft = {
+  research_notes: string
+  questions_to_ask: string
+  checklist: Record<string, boolean>
+  post_interview_notes: string
+}
+
+export const EMPTY_CONTACT: ContactDraft = {
+  name: '',
+  company: '',
+  role_title: '',
+  email: '',
+  phone: '',
+  linkedin_url: '',
+  relationship: 'recruiter',
+  pipeline_stage: 'to_contact',
+  job_id: '',
+  next_action: '',
+  next_action_at: '',
+  notes: '',
+}
+
+export const EMPTY_STAR_STORY: StarStoryDraft = {
+  title: '',
+  situation: '',
+  task: '',
+  action: '',
+  result: '',
+  skills: '',
+  notes: '',
+}
+
+export const EMPTY_INTERVIEW_PREP: InterviewPrepDraft = {
+  research_notes: '',
+  questions_to_ask: '',
+  checklist: {},
+  post_interview_notes: '',
 }
 
 export const EMPTY_JOB: JobDraft = {

@@ -19,25 +19,48 @@ import {
   toDraft,
 } from '../lib/opportunities'
 import {
+  contactDraftToPayload,
+  contactToDraft,
+  interactionDraftToPayload,
+  prepDraftToPayload,
+  starStoryDraftToPayload,
+  starStoryToDraft,
+} from '../lib/networking'
+import {
   APP_VIEWS,
+  EMPTY_CONTACT,
   EMPTY_CV,
   EMPTY_JOB,
+  EMPTY_STAR_STORY,
   JOB_STATUSES,
   STATUS_LABELS,
   type ApplicationSend,
   type AppView,
   type CV,
   type CVDraft,
+  type Contact,
+  type ContactDraft,
+  type ContactInteraction,
+  type ContactStage,
   type DefaultView,
+  type InteractionDraft,
+  type InterviewPrep,
+  type InterviewPrepDraft,
   type Job,
   type JobDraft,
   type JobStatus,
   type SettingsDraft,
+  type StarStory,
+  type StarStoryDraft,
   type UserSettings,
 } from '../types'
+import { ContactForm } from './ContactForm'
+import { ContactsView } from './Contacts'
 import { CVForm } from './CVForm'
+import { InterviewPrepView } from './InterviewPrep'
 import { JobForm } from './JobForm'
 import { JobSearch } from './JobSearch'
+import { StarStoryForm } from './StarStoryForm'
 import type { JobSearchResult } from '../lib/jobSearch'
 import { TailorCV } from './TailorCV'
 import { tailoredCVText, type TailoringResult } from '../lib/tailoring'
@@ -47,6 +70,8 @@ const NAV_ITEMS: Array<{ view: AppView; label: string; symbol: string }> = [
   { view: 'board', label: 'Board', symbol: '▦' },
   { view: 'applications', label: 'Applications', symbol: '≡' },
   { view: 'reminders', label: 'Reminders', symbol: '◷' },
+  { view: 'contacts', label: 'Network', symbol: '◎' },
+  { view: 'interviews', label: 'Interviews', symbol: '✦' },
   { view: 'cvs', label: 'CV library', symbol: '▤' },
   { view: 'search', label: 'Find jobs', symbol: '⌕' },
   { view: 'backup', label: 'Backup', symbol: '⇅' },
@@ -152,6 +177,10 @@ export function Workspace({ session }: WorkspaceProps) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [cvs, setCVs] = useState<CV[]>([])
   const [applicationSends, setApplicationSends] = useState<ApplicationSend[]>([])
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [contactInteractions, setContactInteractions] = useState<ContactInteraction[]>([])
+  const [starStories, setStarStories] = useState<StarStory[]>([])
+  const [interviewPreps, setInterviewPreps] = useState<InterviewPrep[]>([])
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [settingsPersisted, setSettingsPersisted] = useState(false)
   const [view, setView] = useState<AppView>('dashboard')
@@ -163,6 +192,8 @@ export function Workspace({ session }: WorkspaceProps) {
   const [filter, setFilter] = useState<'all' | JobStatus>('all')
   const [editing, setEditing] = useState<Job | 'new' | null>(null)
   const [editingCV, setEditingCV] = useState<CV | 'new' | null>(null)
+  const [editingContact, setEditingContact] = useState<Contact | 'new' | null>(null)
+  const [editingStar, setEditingStar] = useState<StarStory | 'new' | null>(null)
   const [tailoringJob, setTailoringJob] = useState<Job | null>(null)
   const [googleConnected, setGoogleConnected] = useState(false)
   const [pendingSendHistory, setPendingSendHistory] = useState<ApplicationSend | null>(() => readPendingSend(session.user.id))
@@ -189,11 +220,15 @@ export function Workspace({ session }: WorkspaceProps) {
   }
 
   const loadWorkspace = useCallback(async () => {
-    const [jobsResult, cvsResult, settingsResult, sendsResult] = await Promise.all([
+    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, interactionsResult, storiesResult, prepsResult] = await Promise.all([
       supabase.from('jobs').select('*').order('updated_at', { ascending: false }),
       supabase.from('cvs').select('*').order('updated_at', { ascending: false }),
       supabase.from('user_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
       supabase.from('application_sends').select('*').order('sent_at', { ascending: false }).limit(500),
+      supabase.from('contacts').select('*').order('updated_at', { ascending: false }),
+      supabase.from('contact_interactions').select('*').order('occurred_at', { ascending: false }).limit(2000),
+      supabase.from('star_stories').select('*').order('updated_at', { ascending: false }),
+      supabase.from('interview_preps').select('*'),
     ])
 
     if (jobsResult.error) setError(jobsResult.error.message)
@@ -204,6 +239,18 @@ export function Workspace({ session }: WorkspaceProps) {
 
     if (sendsResult.error) setError(sendsResult.error.message)
     else setApplicationSends((sendsResult.data ?? []) as ApplicationSend[])
+
+    if (contactsResult.error) setError(contactsResult.error.message)
+    else setContacts((contactsResult.data ?? []) as Contact[])
+
+    if (interactionsResult.error) setError(interactionsResult.error.message)
+    else setContactInteractions((interactionsResult.data ?? []) as ContactInteraction[])
+
+    if (storiesResult.error) setError(storiesResult.error.message)
+    else setStarStories((storiesResult.data ?? []) as StarStory[])
+
+    if (prepsResult.error) setError(prepsResult.error.message)
+    else setInterviewPreps((prepsResult.data ?? []) as InterviewPrep[])
 
     if (settingsResult.error) {
       setError(settingsResult.error.message)
@@ -236,8 +283,17 @@ export function Workspace({ session }: WorkspaceProps) {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cvs', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('broadcast', { event: 'cv_deleted' }, () => void loadWorkspace())
+        .on('broadcast', { event: 'record_deleted' }, () => void loadWorkspace())
         .on('postgres_changes', { event: '*', schema: 'public', table: 'user_settings', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'application_sends', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'contacts', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'contacts', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'contact_interactions', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'contact_interactions', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'star_stories', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'star_stories', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'interview_preps', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'interview_preps', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .subscribe()
     }
 
@@ -262,30 +318,48 @@ export function Workspace({ session }: WorkspaceProps) {
     if (!settings?.reminders_enabled || !('Notification' in window) || Notification.permission !== 'granted') return
     const reminderLeadMilliseconds = settings.reminder_lead_hours * 3_600_000
 
-    function showDueNotifications() {
+    function notifyOnce(key: string, title: string, body: string) {
       const now = Date.now()
+      return (dueAtValue: string) => {
+        const dueAt = new Date(dueAtValue).getTime()
+        if (dueAt > now + reminderLeadMilliseconds || dueAt < now - 7 * 86_400_000) return
+        if (localStorage.getItem(key)) return
+        new Notification(title, { body })
+        localStorage.setItem(key, '1')
+      }
+    }
+
+    function showDueNotifications() {
       jobs.forEach((job) => {
         if (!job.next_action_at || !ACTIVE_STATUSES.includes(job.status)) return
-        const dueAt = new Date(job.next_action_at).getTime()
-        if (dueAt > now + reminderLeadMilliseconds || dueAt < now - 7 * 86_400_000) return
-        const notificationKey = `opportunity-desk-notified:${job.id}:${job.next_action_at}`
-        if (localStorage.getItem(notificationKey)) return
-        new Notification(job.next_action || 'Application follow-up', {
-          body: `${job.role_title} at ${job.company} · ${relativeDueLabel(job.next_action_at)}`,
-        })
-        localStorage.setItem(notificationKey, '1')
+        notifyOnce(
+          `opportunity-desk-notified:${job.id}:${job.next_action_at}`,
+          job.next_action || 'Application follow-up',
+          `${job.role_title} at ${job.company} · ${relativeDueLabel(job.next_action_at)}`,
+        )(job.next_action_at)
+      })
+      contacts.forEach((contact) => {
+        if (!contact.next_action_at || contact.pipeline_stage === 'closed') return
+        notifyOnce(
+          `opportunity-desk-notified:contact:${contact.id}:${contact.next_action_at}`,
+          contact.next_action || 'Networking follow-up',
+          `${contact.name}${contact.company ? ` · ${contact.company}` : ''} · ${relativeDueLabel(contact.next_action_at)}`,
+        )(contact.next_action_at)
       })
     }
 
     showDueNotifications()
     const timer = window.setInterval(showDueNotifications, 60_000)
     return () => window.clearInterval(timer)
-  }, [jobs, settings])
+  }, [contacts, jobs, settings])
 
   const visibleJobs = useMemo(() => jobs.filter((job) => jobMatches(job, search, filter)), [filter, jobs, search])
   const reminders = useMemo(() => jobs
     .filter((job) => job.next_action_at && ACTIVE_STATUSES.includes(job.status))
     .sort((left, right) => new Date(left.next_action_at!).getTime() - new Date(right.next_action_at!).getTime()), [jobs])
+  const contactReminders = useMemo(() => contacts
+    .filter((contact) => contact.next_action_at && contact.pipeline_stage !== 'closed')
+    .sort((left, right) => new Date(left.next_action_at!).getTime() - new Date(right.next_action_at!).getTime()), [contacts])
 
   const counts = useMemo(() => ({
     active: jobs.filter((job) => ACTIVE_STATUSES.includes(job.status)).length,
@@ -461,6 +535,160 @@ export function Workspace({ session }: WorkspaceProps) {
       setNotice('Application deleted.')
       await loadWorkspace()
     }
+    setBusy(false)
+  }
+
+  async function saveContact(draft: ContactDraft) {
+    if (!editingContact) return
+    const recordBeingEdited = editingContact
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = contactDraftToPayload(draft)
+    const result = recordBeingEdited === 'new'
+      ? await supabase.from('contacts').insert({ ...payload, user_id: session.user.id }).select('id, version').maybeSingle()
+      : await supabase.from('contacts').update(payload).eq('id', recordBeingEdited.id).eq('version', recordBeingEdited.version).select('id, version').maybeSingle()
+
+    if (result.error) setError(result.error.message)
+    else if (!result.data && recordBeingEdited !== 'new') {
+      const { data: latest, error: latestError } = await supabase.from('contacts').select('version').eq('id', recordBeingEdited.id).maybeSingle()
+      if (latestError) setError(latestError.message)
+      else if (!latest) setError('This contact was deleted on another device. Your unsaved edits remain open.')
+      else {
+        setEditingContact({ ...recordBeingEdited, version: latest.version })
+        setError('This contact changed on another device. Your edits remain open. Review them, then save again.')
+      }
+      await loadWorkspace()
+    } else {
+      setEditingContact(null)
+      setNotice('Contact saved and synchronized.')
+      await loadWorkspace()
+    }
+    setBusy(false)
+  }
+
+  async function deleteContact(contact: Contact) {
+    if (!window.confirm(`Delete ${contact.name}? Their logged interactions are removed too. This cannot be undone.`)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: deleteError } = await supabase.from('contacts').delete().eq('id', contact.id).eq('version', contact.version).select('id').maybeSingle()
+    if (deleteError) setError(deleteError.message)
+    else if (!data) setError('This contact changed or was deleted on another device. The latest list has been loaded; please review it and try again.')
+    else setNotice('Contact deleted.')
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function changeContactStage(contact: Contact, stage: ContactStage) {
+    if (stage === contact.pipeline_stage) return
+    setBusy(true)
+    setError('')
+    const { data, error: updateError } = await supabase
+      .from('contacts')
+      .update({ pipeline_stage: stage })
+      .eq('id', contact.id)
+      .eq('version', contact.version)
+      .select('id')
+      .maybeSingle()
+    if (updateError) setError(updateError.message)
+    else if (!data) setError('This contact changed on another device. The latest version has been loaded; please try the move again.')
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function logInteraction(draft: InteractionDraft) {
+    if (!editingContact || editingContact === 'new') return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { error: insertError } = await supabase
+      .from('contact_interactions')
+      .insert({ ...interactionDraftToPayload(draft, editingContact.id), user_id: session.user.id })
+    if (insertError) setError(insertError.message)
+    else setNotice('Interaction logged and synchronized.')
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function deleteInteraction(interaction: ContactInteraction) {
+    if (!window.confirm('Remove this interaction note? This cannot be undone.')) return
+    setBusy(true)
+    setError('')
+    const { data, error: deleteError } = await supabase.from('contact_interactions').delete().eq('id', interaction.id).eq('version', interaction.version).select('id').maybeSingle()
+    if (deleteError) setError(deleteError.message)
+    else if (!data) setError('This interaction changed or was removed on another device. The latest history has been loaded.')
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function saveStarStory(draft: StarStoryDraft) {
+    if (!editingStar) return
+    const recordBeingEdited = editingStar
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = starStoryDraftToPayload(draft)
+    const result = recordBeingEdited === 'new'
+      ? await supabase.from('star_stories').insert({ ...payload, user_id: session.user.id }).select('id, version').maybeSingle()
+      : await supabase.from('star_stories').update(payload).eq('id', recordBeingEdited.id).eq('version', recordBeingEdited.version).select('id, version').maybeSingle()
+
+    if (result.error) setError(result.error.message)
+    else if (!result.data && recordBeingEdited !== 'new') {
+      const { data: latest, error: latestError } = await supabase.from('star_stories').select('version').eq('id', recordBeingEdited.id).maybeSingle()
+      if (latestError) setError(latestError.message)
+      else if (!latest) setError('This story was deleted on another device. Your unsaved edits remain open.')
+      else {
+        setEditingStar({ ...recordBeingEdited, version: latest.version })
+        setError('This story changed on another device. Your edits remain open. Review them, then save again.')
+      }
+      await loadWorkspace()
+    } else {
+      setEditingStar(null)
+      setNotice('STAR story saved and synchronized.')
+      await loadWorkspace()
+    }
+    setBusy(false)
+  }
+
+  async function deleteStarStory(story: StarStory) {
+    if (!window.confirm(`Delete “${story.title}”? This cannot be undone.`)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: deleteError } = await supabase.from('star_stories').delete().eq('id', story.id).eq('version', story.version).select('id').maybeSingle()
+    if (deleteError) setError(deleteError.message)
+    else if (!data) setError('This story changed or was deleted on another device. The latest library has been loaded.')
+    else setNotice('STAR story deleted.')
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function saveInterviewPrep(job: Job, existingPrep: InterviewPrep | null, draft: InterviewPrepDraft) {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = prepDraftToPayload(draft)
+    if (existingPrep) {
+      const { data, error: updateError } = await supabase
+        .from('interview_preps')
+        .update(payload)
+        .eq('id', existingPrep.id)
+        .eq('version', existingPrep.version)
+        .select('id')
+        .maybeSingle()
+      if (updateError) setError(updateError.message)
+      else if (!data) setError('This preparation changed on another device. The latest version has been loaded; review it, then save again.')
+      else setNotice('Interview preparation saved and synchronized.')
+    } else {
+      const { error: insertError } = await supabase
+        .from('interview_preps')
+        .insert({ ...payload, user_id: session.user.id, job_id: job.id })
+      if (insertError?.code === '23505') setError('Preparation for this interview was started on another device. The latest version has been loaded; review it, then save again.')
+      else if (insertError) setError(insertError.message)
+      else setNotice('Interview preparation saved and synchronized.')
+    }
+    await loadWorkspace()
     setBusy(false)
   }
 
@@ -1033,7 +1261,7 @@ export function Workspace({ session }: WorkspaceProps) {
         <main className="dashboard">
           <section className="page-head">
             <div><p className="eyebrow">Private synchronized workspace</p><h1>{viewTitle(view)}</h1></div>
-            <button className="button primary add-button" onClick={() => { setError(''); if (view === 'cvs') setEditingCV('new'); else setEditing('new') }}>{view === 'cvs' ? '+ Add CV' : '+ Add application'}</button>
+            <button className="button primary add-button" onClick={() => { setError(''); if (view === 'cvs') setEditingCV('new'); else if (view === 'contacts') setEditingContact('new'); else if (view === 'interviews') setEditingStar('new'); else setEditing('new') }}>{view === 'cvs' ? '+ Add CV' : view === 'contacts' ? '+ Add contact' : view === 'interviews' ? '+ Add STAR story' : '+ Add application'}</button>
           </section>
 
           {pendingSendHistory && <div className="sync-retry-banner" role="alert"><span><strong>Email already sent; history pending</strong>The Gmail message to {pendingSendHistory.recipient} is saved in this browser for retry. This action records that same message and will not send it again.</span><button className="button secondary" disabled={busy} onClick={() => void retrySendHistory()}>{busy ? 'Retrying...' : 'Retry history sync'}</button></div>}
@@ -1044,7 +1272,9 @@ export function Workspace({ session }: WorkspaceProps) {
               {view === 'dashboard' && <DashboardView jobs={jobs} counts={counts} reminders={reminders} onEdit={openEditor} onViewAll={() => setView('applications')} />}
               {view === 'board' && <BoardView jobs={jobs} cvs={cvs} busy={busy} onEdit={openEditor} onStatus={changeStatus} onCV={changeJobCV} />}
               {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} sends={applicationSends} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onTailor={(job) => { setError(''); setNotice(''); setTailoringJob(job) }} onDelete={deleteJob} onDownloadCV={downloadCV} />}
-              {view === 'reminders' && <RemindersView jobs={reminders} onEdit={openEditor} onEnable={enableNotifications} />}
+              {view === 'reminders' && <RemindersView jobs={reminders} contacts={contactReminders} onEdit={openEditor} onEditContact={(contact) => { setError(''); setEditingContact(contact) }} onEnable={enableNotifications} />}
+              {view === 'contacts' && <ContactsView contacts={contacts} interactions={contactInteractions} jobs={jobs} busy={busy} onAdd={() => { setError(''); setEditingContact('new') }} onEdit={(contact) => { setError(''); setEditingContact(contact) }} onDelete={deleteContact} onStage={changeContactStage} />}
+              {view === 'interviews' && <InterviewPrepView jobs={jobs} preps={interviewPreps} stories={starStories} busy={busy} onSavePrep={saveInterviewPrep} onAddStory={() => { setError(''); setEditingStar('new') }} onEditStory={(story) => { setError(''); setEditingStar(story) }} onDeleteStory={deleteStarStory} />}
               {view === 'backup' && <BackupView jobs={jobs} busy={busy} onJson={exportJson} onCsv={exportCsv} onImport={importJson} />}
               {view === 'settings' && settings && <SettingsView settings={settings} busy={busy} googleConnected={googleConnected} onSave={saveSettings} onConnectGoogle={connectGoogle} onEnableNotifications={enableNotifications} />}
               {view === 'cvs' && <CVLibrary cvs={cvs} busy={busy} onAdd={() => { setError(''); setEditingCV('new') }} onEdit={(cv) => { setError(''); setEditingCV(cv) }} onDownload={downloadCV} onDelete={deleteCV} />}
@@ -1055,6 +1285,8 @@ export function Workspace({ session }: WorkspaceProps) {
       </div>
 
       {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onTailor={saveAndOpenTailoring} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
+      {editingContact && <ContactForm initial={editingContact === 'new' ? EMPTY_CONTACT : contactToDraft(editingContact)} title={editingContact === 'new' ? 'Add a contact' : 'Update contact'} busy={busy} error={error} jobs={jobs} existing={editingContact !== 'new'} interactions={editingContact === 'new' ? [] : contactInteractions.filter((interaction) => interaction.contact_id === editingContact.id)} onCancel={() => { setError(''); setEditingContact(null) }} onSave={saveContact} onLogInteraction={logInteraction} onDeleteInteraction={deleteInteraction} />}
+      {editingStar && <StarStoryForm initial={editingStar === 'new' ? EMPTY_STAR_STORY : starStoryToDraft(editingStar)} title={editingStar === 'new' ? 'Add a STAR story' : 'Update STAR story'} busy={busy} error={error} onCancel={() => { setError(''); setEditingStar(null) }} onSave={saveStarStory} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
       {tailoringJob && <TailorCV job={tailoringJob} cvs={cvs} busy={busy} actionError={error} actionNotice={notice} onClose={() => { setError(''); setTailoringJob(null) }} onSaveCV={saveTailoredCV} onUseCoverLetter={useTailoredCoverLetter} />}
     </div>
@@ -1122,8 +1354,13 @@ function ApplicationsView({ jobs, cvs, sends, total, search, filter, busy, onSea
   return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>CV used</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => { const linkedCV = cvs.find((cv) => cv.id === job.cv_id); const lastSend = sends.find((send) => send.job_id === job.id && send.status === 'sent'); return <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{linkedCV ? <><strong>{linkedCV.name}</strong><span>{linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV'}</span>{linkedCV.storage_path && <button className="button ghost table-download" disabled={busy} onClick={() => void onDownloadCV(linkedCV)}>Download</button>}</> : <span>No CV linked</span>}{lastSend && <span className="sent-summary">Sent {formatDateTime(lastSend.sent_at)} to {lastSend.recipient}</span>}</td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" disabled={busy} onClick={() => onTailor(job)}>Tailor CV</button><button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr> })}</tbody></table></div>}</section>
 }
 
-function RemindersView({ jobs, onEdit, onEnable }: { jobs: Job[]; onEdit: (job: Job) => void; onEnable: () => Promise<void> }) {
-  return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Follow-up queue</p><h2>{jobs.length} scheduled actions</h2></div><button className="button secondary" onClick={() => void onEnable()}>Enable browser alerts</button></div>{jobs.length === 0 ? <div className="empty-state"><strong>Nothing is due</strong><span>Add a next action and date to an application to see it here.</span></div> : <div className="reminder-list">{jobs.map((job) => <button key={job.id} onClick={() => onEdit(job)}><time dateTime={job.next_action_at!}>{formatDateTime(job.next_action_at!)}</time><span><strong>{job.next_action || 'Follow up'}</strong><small>{job.role_title} at {job.company}</small></span><em className={new Date(job.next_action_at!).getTime() < Date.now() ? 'overdue' : ''}>{relativeDueLabel(job.next_action_at!)}</em></button>)}</div>}</section>
+function RemindersView({ jobs, contacts, onEdit, onEditContact, onEnable }: { jobs: Job[]; contacts: Contact[]; onEdit: (job: Job) => void; onEditContact: (contact: Contact) => void; onEnable: () => Promise<void> }) {
+  return (
+    <>
+      <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Follow-up queue</p><h2>{jobs.length} scheduled actions</h2></div><button className="button secondary" onClick={() => void onEnable()}>Enable browser alerts</button></div>{jobs.length === 0 ? <div className="empty-state"><strong>Nothing is due</strong><span>Add a next action and date to an application to see it here.</span></div> : <div className="reminder-list">{jobs.map((job) => <button key={job.id} onClick={() => onEdit(job)}><time dateTime={job.next_action_at!}>{formatDateTime(job.next_action_at!)}</time><span><strong>{job.next_action || 'Follow up'}</strong><small>{job.role_title} at {job.company}</small></span><em className={new Date(job.next_action_at!).getTime() < Date.now() ? 'overdue' : ''}>{relativeDueLabel(job.next_action_at!)}</em></button>)}</div>}</section>
+      {contacts.length > 0 && <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Networking</p><h2>{contacts.length} networking follow-ups</h2></div></div><div className="reminder-list">{contacts.map((contact) => <button key={contact.id} onClick={() => onEditContact(contact)}><time dateTime={contact.next_action_at!}>{formatDateTime(contact.next_action_at!)}</time><span><strong>{contact.next_action || 'Follow up'}</strong><small>{contact.name}{contact.company ? ` · ${contact.company}` : ''}</small></span><em className={new Date(contact.next_action_at!).getTime() < Date.now() ? 'overdue' : ''}>{relativeDueLabel(contact.next_action_at!)}</em></button>)}</div></section>}
+    </>
+  )
 }
 
 function CVLibrary({ cvs, busy, onAdd, onEdit, onDownload, onDelete }: { cvs: CV[]; busy: boolean; onAdd: () => void; onEdit: (cv: CV) => void; onDownload: (cv: CV) => Promise<void>; onDelete: (cv: CV) => Promise<void> }) {
@@ -1153,7 +1390,7 @@ function CVLibrary({ cvs, busy, onAdd, onEdit, onDownload, onDelete }: { cvs: CV
 }
 
 function BackupView({ jobs, busy, onJson, onCsv, onImport }: { jobs: Job[]; busy: boolean; onJson: () => void; onCsv: () => void; onImport: (event: ChangeEvent<HTMLInputElement>) => Promise<void> }) {
-  return <div className="settings-grid"><section className="workspace-card panel"><p className="eyebrow">Portable application copy</p><h2>Export applications</h2><p>Download application records as a restorable JSON file or a CSV spreadsheet. CV files remain protected in the separate private library.</p><div className="button-row"><button className="button primary" onClick={onJson}>Download JSON backup</button><button className="button secondary" onClick={onCsv}>Download CSV</button></div></section><section className="workspace-card panel"><p className="eyebrow">Restore applications</p><h2>Import a backup</h2><p>Import a JSON file created by this version of Opportunity Desk. Matching application IDs are updated; new ones are added.</p><label className={busy ? 'button secondary file-button disabled' : 'button secondary file-button'}>{busy ? 'Importing…' : 'Choose JSON backup'}<input type="file" accept="application/json,.json" disabled={busy} onChange={(event) => void onImport(event)} /></label><small>{jobs.length} applications are currently synchronized.</small></section></div>
+  return <div className="settings-grid"><section className="workspace-card panel"><p className="eyebrow">Portable application copy</p><h2>Export applications</h2><p>Download application records as a restorable JSON file or a CSV spreadsheet. CV files remain protected in the separate private library. Contacts and interview preparation are not yet part of this backup.</p><div className="button-row"><button className="button primary" onClick={onJson}>Download JSON backup</button><button className="button secondary" onClick={onCsv}>Download CSV</button></div></section><section className="workspace-card panel"><p className="eyebrow">Restore applications</p><h2>Import a backup</h2><p>Import a JSON file created by this version of Opportunity Desk. Matching application IDs are updated; new ones are added.</p><label className={busy ? 'button secondary file-button disabled' : 'button secondary file-button'}>{busy ? 'Importing…' : 'Choose JSON backup'}<input type="file" accept="application/json,.json" disabled={busy} onChange={(event) => void onImport(event)} /></label><small>{jobs.length} applications are currently synchronized.</small></section></div>
 }
 
 function SettingsView({ settings, busy, googleConnected, onSave, onConnectGoogle, onEnableNotifications }: { settings: UserSettings; busy: boolean; googleConnected: boolean; onSave: (draft: SettingsDraft) => Promise<void>; onConnectGoogle: (clientId: string) => Promise<void>; onEnableNotifications: () => Promise<void> }) {

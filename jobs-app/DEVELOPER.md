@@ -2,7 +2,7 @@
 
 This file is the starting point for the next change to Opportunity Desk. It explains what exists, why it was built this way, where to make changes, and what must be checked before merging.
 
-Last reviewed: 3 August 2026.
+Last reviewed: 4 August 2026.
 
 ## Start here for the next change
 
@@ -69,8 +69,11 @@ The browser receives only the public Supabase project URL and publishable key. T
 | Live job search | Merged | Remotive and Arbeitnow search, pagination, publication dates, one-click saves, and provider duplicate protection. |
 | Google workflow | Merged in PR #9 | Calendar events, Gmail sending with the linked CV, per-user OAuth isolation, synchronized send history, and retryable history writes. |
 | AI CV tailoring | Merged in PR #10 | Local matching, protected AI drafting, usage limits, complete source-CV preservation, and form-validation safeguards. Add the server secret before production acceptance testing. |
+| Networking and interview preparation | In progress | Contact tracker with its own pipeline, interaction history, reminders, STAR story library, and per-application interview preparation. |
 
 PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
+
+Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover letters are being produced in separate tools. Its unfinished foundation slice (`cv_artifacts` catalog and `job_stage_events` history) is parked unmerged on the `codex/cv-document-foundation` branch; the `job_stage_events` part is worth reviving before the analytics phase.
 
 ## Features already implemented
 
@@ -142,6 +145,24 @@ PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 - A saved tailored version contains the generated sections **and the complete source CV**, so a linked text attachment is not reduced to a summary and several bullets.
 - Opening the tailoring tool from an application form runs the same native URL, email, and required-field validation as normal saving.
 
+### Networking tracker
+
+- Contacts with relationship type, company, role, email, phone, and profile link.
+- A networking pipeline (`to_contact` → `contacted` → `in_conversation` → `meeting_scheduled` → `dormant` → `closed`) separate from application status.
+- Contacts can link to an opportunity; the database verifies same-user ownership like `jobs.cv_id`.
+- Logged interactions per contact (channel, time, summary); the newest one is shown as the last interaction.
+- Next actions with due dates appear in the Reminders view and in browser notifications alongside application follow-ups.
+- Contact, interaction, story, and preparation deletions are broadcast on the private per-user channel because filtered Postgres DELETE subscriptions are unreliable.
+
+### Interview preparation
+
+- A reusable STAR story library (situation, task, action, result, skills, notes); stories must stay factual.
+- Applications in `phone_screen`, `interviewing`, `assessment`, or `final_round` appear as upcoming interviews.
+- Likely topics are derived locally from the job description with the same keyword normalization used for CV matching; no AI call is involved.
+- Saved STAR stories are ranked against the job description so the most relevant evidence is suggested.
+- Per-application preparation record: research notes, questions to ask, a fixed preparation checklist, and post-interview notes, all synchronized with optimistic locking.
+- One preparation record per application, enforced by a unique index; concurrent creation from two devices resolves to a clear conflict message.
+
 ## Important files
 
 | File | Responsibility |
@@ -153,13 +174,18 @@ PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 | `src/components/CVForm.tsx` | CV metadata, optional company, text, and file selection. |
 | `src/components/JobSearch.tsx` | Search form and vacancy results. |
 | `src/components/TailorCV.tsx` | CV selection, local match display, AI drafting, review, copy, save, and cover-letter actions. |
+| `src/components/Contacts.tsx` | Networking pipeline summary, contact search and stage filter, and contact cards. |
+| `src/components/ContactForm.tsx` | Contact editor with interaction logging and history. |
+| `src/components/InterviewPrep.tsx` | Upcoming interviews, likely topics, story ranking, checklist, preparation notes, and the STAR library. |
+| `src/components/StarStoryForm.tsx` | STAR story editor. |
 | `src/lib/supabase.ts` | Browser Supabase client using public environment values. |
 | `src/lib/opportunities.ts` | Application conversions, filtering, dates, board columns, CSV, and JSON helpers. |
 | `src/lib/cvs.ts` | CV file validation, safe filenames, downloads, and attachment preparation. |
 | `src/lib/jobSearch.ts` | Provider requests, pagination, normalization, and result filtering. |
 | `src/lib/google.ts` | OAuth access cache, Calendar, Gmail, MIME email creation, and token isolation. |
-| `src/lib/tailoring.ts` | Keyword normalization, CV ranking, Edge Function invocation, and saved/copyable text creation. |
-| `src/types.ts` | Shared application, CV, settings, send-history, status, and draft types. |
+| `src/lib/tailoring.ts` | Keyword normalization, CV ranking, top-keyword extraction, Edge Function invocation, and saved/copyable text creation. |
+| `src/lib/networking.ts` | Contact, interaction, story, and preparation conversions; contact filtering; interview-topic derivation and story ranking. |
+| `src/types.ts` | Shared application, CV, contact, interaction, STAR story, interview-preparation, settings, send-history, status, and draft types. |
 | `src/styles.css` | Desktop and mobile layout. |
 | `../supabase/functions/tailor-cv/index.ts` | Authenticated OpenAI server integration and generation accounting. |
 | `../supabase/migrations/` | Replayable database history. Never replace migrations with untracked dashboard-only changes. |
@@ -173,8 +199,12 @@ PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 | `public.user_settings` | Default view, reminders, timezone, and public Google OAuth client ID. |
 | `public.application_sends` | Immutable Gmail send history and provider message ID. |
 | `public.ai_generations` | Server-only generation status, model, usage, and rolling-limit accounting. |
+| `public.contacts` | Networking contacts, relationship type, pipeline stage, optional opportunity link, next action, version, and extension data. |
+| `public.contact_interactions` | Logged conversations per contact with channel, time, and summary. |
+| `public.star_stories` | Reusable STAR interview examples with skills and notes. |
+| `public.interview_preps` | One preparation record per application: research notes, questions, checklist, and post-interview notes. |
 | Storage bucket `cvs` | Private user-owned CV files. |
-| Realtime channel `opportunity-desk:<user-id>` | Private database refresh and CV-deletion broadcasts. |
+| Realtime channel `opportunity-desk:<user-id>` | Private database refresh plus CV-deletion and networking-deletion broadcasts. |
 
 Every editable record uses a positive `version`. Update code must include the expected version and verify that a row was returned.
 
@@ -212,6 +242,7 @@ Supabase considers an update that changes zero rows successful, so checking only
 | `20260802212315_add_google_integrations.sql` | Adds and validates the synchronized public Google client ID. |
 | `20260802215953_add_ai_generation_limits.sql` | Adds the private AI ledger and atomic per-user reservation function. |
 | `20260802220355_address_ai_generation_advisors.sql` | Adds foreign-key indexes and an explicit server-managed deny policy. |
+| `20260804120000_add_networking_and_interview_prep.sql` | Adds contacts, interactions, STAR stories, interview preparation, ownership checks, deletion broadcasts, and Realtime. |
 
 For a schema change:
 
@@ -351,7 +382,9 @@ Also verify:
 
 The improvements below are ordered by practical value to an active job search.
 
-### 1. Professional PDF and DOCX output — recommended next
+### 1. Professional PDF and DOCX output — deferred
+
+**Deferred by decision on 4 August 2026:** CVs and cover letters are produced in separate tools, so in-app document generation is not planned. The scope below is kept for reference in case that decision changes.
 
 **Why it helps:** AI-tailored versions are currently editable text. Employers normally expect a polished PDF or DOCX with stable formatting, contact details, dates, and page breaks.
 
@@ -393,6 +426,8 @@ Suggested scope:
 - reminders after recruiter calls and interviews;
 - a networking pipeline separate from the application status.
 
+Delivered by the networking and interview preparation phase, except reusable outreach drafts, which remain open.
+
 ### 4. Interview preparation workspace
 
 **Why it helps:** The job description, selected CV, and company notes are already available in one place.
@@ -405,6 +440,8 @@ Suggested scope:
 - interview schedule and preparation checklist;
 - post-interview notes and thank-you reminder;
 - AI assistance that may reorganize verified facts but may not invent experience.
+
+Delivered by the networking and interview preparation phase, except AI assistance, which remains open.
 
 ### 5. Job-search analytics and weekly review
 
@@ -472,12 +509,13 @@ Suggested scope:
 
 ## Suggested roadmap
 
-1. **Phase 10: Professional CV output** — preview, PDF/DOCX generation, private storage, and safe Gmail attachment.
-2. **Phase 11: Saved searches and daily digest** — reduce repetitive searching and surface new vacancies.
-3. **Phase 12: Networking and interview preparation** — improve conversion after finding an opportunity.
-4. **Phase 13: Analytics and server reminders** — guide weekly effort and prevent missed follow-ups.
+Reordered on 4 August 2026: professional CV output (previously Phase 10) is deferred because CVs and cover letters are produced in separate tools.
 
-This order improves the quality of each application first, then increases opportunity coverage, then improves interview conversion, and finally optimizes the overall search process.
+1. **Phase 12: Networking and interview preparation** — in progress in this branch; improves conversion after finding an opportunity.
+2. **Phase 13: Analytics and server reminders** — guide weekly effort and prevent missed follow-ups. Revive the parked `job_stage_events` history from `codex/cv-document-foundation` first so conversion metrics have trustworthy data.
+3. **Phase 11: Saved searches and daily digest** — reduce repetitive searching and surface new vacancies.
+
+This order improves interview conversion first, then measures what works, and finally increases opportunity coverage.
 
 ## Definition of done for any future phase
 

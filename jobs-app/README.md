@@ -39,8 +39,10 @@ This phase restores and improves:
 - protected AI-assisted CV and cover-letter drafting with strict structured output
 - editable tailored CV versions that retain the complete source CV, preserve the original version, and link back to the application
 - a private per-user generation ledger and rolling 24-hour usage limit
+- a networking tracker: contacts with relationship types, their own pipeline, logged interactions, opportunity links, and follow-up reminders
+- an interview preparation workspace: a reusable STAR story library, likely topics derived locally from the job description, story ranking, a preparation checklist, research notes, and post-interview notes
 
-The next planned phase is final production acceptance testing and documentation cleanup.
+The active phase is networking and interview preparation. Professional PDF/DOCX CV output is deferred — CVs and cover letters are produced in separate tools. The following phases are analytics with server reminders, then saved searches with a daily digest.
 
 ## Local development
 
@@ -81,6 +83,7 @@ The function sends requests with storage disabled and asks OpenAI for a strict J
 ## Verification
 
 ```sh
+npm test
 npm run build
 npm audit --audit-level=high
 ```

@@ -32,6 +32,15 @@ function tokens(value: string) {
     .filter((word) => word && !STOPWORDS.has(word) && (word.length >= 3 || SHORT_SKILLS.has(word)))
 }
 
+export function topKeywords(text: string, limit = 12): string[] {
+  const frequency = new Map<string, number>()
+  tokens(text).forEach((word) => frequency.set(word, (frequency.get(word) ?? 0) + 1))
+  return [...frequency.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([word]) => word)
+}
+
 export function matchCV(cvText: string, jobDescription: string): MatchResult {
   const cvTokens = new Set(tokens(cvText))
   const jobTokens = tokens(jobDescription)
