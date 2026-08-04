@@ -18,16 +18,18 @@ Do not put service-role keys, OpenAI keys, Google access tokens, or other privat
 
 ## Product purpose
 
-Opportunity Desk is a private job-search workspace at `jobs.ezherebetskii.com`. A person signs in once on any device and sees the same applications, CVs, reminders, preferences, and send history. No device-specific database connection is required.
+Opportunity Desk is a private job-search workspace at `jobs.ezherebetskii.com`. A person signs in once on any device and sees the same applications, CVs, contacts, interview preparation, reminders, preferences, and history. No device-specific database connection is required.
 
 The main user journey is:
 
 1. Find or manually add an opportunity.
 2. Track it through the application pipeline.
 3. Select or tailor a CV for that opportunity.
-4. Schedule follow-ups and interviews.
-5. Send the application through Gmail and retain synchronized history.
-6. Review results and decide what to do next.
+4. Send the application through Gmail and retain synchronized history.
+5. Work the relationships around it: recruiters, referrals, and follow-ups.
+6. Prepare for each interview against the job description and verified evidence.
+7. Schedule follow-ups and receive reminders even when the app is closed.
+8. Review what actually produced interviews and decide what to do next.
 
 ## Architecture that must remain unchanged
 
@@ -40,6 +42,9 @@ flowchart LR
     Browser --> Google["Google Calendar and Gmail"]
     Browser --> Functions["Supabase Edge Functions"]
     Functions --> OpenAI["OpenAI API"]
+    Cron["pg_cron schedule"] --> Reminders["send-reminders function"]
+    Reminders --> Resend["Resend email API"]
+    Reminders --> Database
     GitHub["GitHub main branch"] --> Cloudflare["Cloudflare Pages"]
     Cloudflare --> Browser
 ```
@@ -52,6 +57,7 @@ flowchart LR
 - **Supabase Storage** keeps CV files private and separated by user folder.
 - **Supabase Edge Functions** hold private third-party API keys and perform protected server work.
 - **Google Identity Services** grants short-lived Calendar and Gmail access in the current browser session.
+- **pg_cron** triggers scheduled server work; secrets it needs are read from Vault at execution time.
 - **GitHub pull requests** provide change history and review.
 - **Cloudflare Pages** builds and hosts the browser application.
 
@@ -70,10 +76,13 @@ The browser receives only the public Supabase project URL and publishable key. T
 | Google workflow | Merged in PR #9 | Calendar events, Gmail sending with the linked CV, per-user OAuth isolation, synchronized send history, and retryable history writes. |
 | AI CV tailoring | Merged in PR #10 | Local matching, protected AI drafting, usage limits, complete source-CV preservation, and form-validation safeguards. Add the server secret before production acceptance testing. |
 | Networking and interview preparation | Merged in PR #13 | Contact tracker with its own pipeline, interaction history, reminders, STAR story library, and per-application interview preparation. |
-| Analytics and server reminders | In progress | Immutable stage-event history, honest counts-first analytics, and an opt-in scheduled email digest of due follow-ups. |
+| Analytics and server reminders | Merged in PR #14 | Immutable stage-event history, honest counts-first analytics, and an opt-in scheduled email digest of due follow-ups. |
 
 PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 PR #13: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/13>
+PR #14: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/14>
+
+All migrations through `20260804171000` are applied to the production project, and `send-reminders` is deployed. Reminder delivery stays idle until its secrets are configured; see the operational follow-ups near the end of this file.
 
 Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover letters are being produced in separate tools. Its `job_stage_events` history has been revived in the analytics phase; the remaining `cv_artifacts` slice stays parked unmerged on the `codex/cv-document-foundation` branch.
 
@@ -154,7 +163,6 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - Contacts can link to an opportunity; the database verifies same-user ownership like `jobs.cv_id`.
 - Logged interactions per contact (channel, time, summary). The contact list embeds only each contact's newest interaction time; the full history is loaded per contact when its editor opens, so no account-wide row limit can hide older history.
 - A failed interaction insert keeps the typed note in the form so it can be retried.
-- Interview preparation saves are optimistically locked against the record version the open draft was loaded from, not the latest Realtime state, so a background refresh cannot make a stale draft silently overwrite another device's save.
 - Next actions with due dates appear in the Reminders view and in browser notifications alongside application follow-ups.
 - Contact, interaction, story, and preparation deletions are broadcast on the private per-user channel because filtered Postgres DELETE subscriptions are unreliable.
 
@@ -166,6 +174,7 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - Saved STAR stories are ranked against the job description so the most relevant evidence is suggested.
 - Per-application preparation record: research notes, questions to ask, a fixed preparation checklist, and post-interview notes, all synchronized with optimistic locking.
 - One preparation record per application, enforced by a unique index; concurrent creation from two devices resolves to a clear conflict message.
+- Preparation saves are locked against the record version the open draft was loaded from, not the latest Realtime state, so a background refresh cannot let a stale draft silently overwrite another device's save.
 
 ### Analytics
 
@@ -181,7 +190,9 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - pg_cron invokes the `send-reminders` Edge Function hourly through `net.http_post`; the shared secret is read from Vault (`reminder_cron_secret`) at execution time and verified against the function's `REMINDER_CRON_SECRET`.
 - The function runs with the service role, gathers due application and networking follow-ups per opted-in user (lead window from `reminder_lead_hours`, overdue up to 7 days), and sends one digest email through Resend to the account's own address.
 - `reminder_deliveries` deduplicates per (user, item, next_action_at); rows are written only after Resend accepts the email, so a failed send retries at the next matching hour instead of being lost.
-- If the digest email fails to record its deliveries, the worst case is a repeated digest — never a silently missed reminder.
+- Delivery is therefore **at-least-once, not exactly-once**, and deliberately so. If Resend accepts the email but the delivery rows then fail to write, those items stay eligible and the digest repeats at the next matching hour. Do not describe this as "never emailed twice": a duplicate reminder is an accepted cost, a silently missed follow-up is not.
+- Making it exactly-once would mean reserving the delivery rows before sending and reconciling failures afterwards, which trades a repeated digest for a possible lost one. That trade has not been made.
+- The comment above `reminder_deliveries` in migration `20260804171000` still states the stronger "never emailed twice" claim. The migration is already applied and Supabase records migration statements, so it was left untouched rather than edited; correct the wording only if a later migration revisits that table.
 
 ## Important files
 
@@ -207,7 +218,8 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/lib/tailoring.ts` | Keyword normalization, CV ranking, top-keyword extraction, Edge Function invocation, and saved/copyable text creation. |
 | `src/lib/networking.ts` | Contact, interaction, story, and preparation conversions; contact filtering; interview-topic derivation and story ranking. |
 | `src/lib/analytics.ts` | Pure analytics functions: reached statuses, funnel, weekly buckets, median response time, grouped outcomes. |
-| `src/types.ts` | Shared application, CV, contact, interaction, STAR story, interview-preparation, settings, send-history, status, and draft types. |
+| `src/types.ts` | Shared application, CV, contact, interaction, STAR story, interview-preparation, stage-event, settings, send-history, status, and draft types. |
+| `src/lib/*.test.ts` | Vitest unit tests for the pure library logic. Run with `npm test`. |
 | `src/styles.css` | Desktop and mobile layout. |
 | `../supabase/functions/tailor-cv/index.ts` | Authenticated OpenAI server integration and generation accounting. |
 | `../supabase/functions/send-reminders/index.ts` | Cron-invoked reminder digests: secret check, per-user due items, Resend delivery, and dedup records. |
@@ -302,6 +314,11 @@ These rules come from defects already found during review. Treat them as regress
 14. **Never save an incomplete attachment as a CV.** AI-tailored versions must retain the full source content.
 15. **Normalize matching text before scoring.** Terminal punctuation and short skills must not distort ranking.
 16. **Run complete form validation on alternate actions.** A non-submit button must not bypass URL, email, or required-field validation before saving.
+17. **Lock against the version the open draft was loaded from.** A Realtime refresh must never raise the expected version underneath unsaved edits; otherwise a stale draft passes the optimistic-lock check and silently overwrites another device.
+18. **Keep user input after a failed write.** Clear a form field only once the handler confirms the record was saved. A resolved promise is not evidence of success.
+19. **Never request more rows than `api.max_rows`.** A `.limit()` above the configured cap is silently truncated; page with `.range()` until a short page arrives. With ascending order the truncation hides the newest data, which is usually the data that matters.
+20. **Bucket calendar periods by calendar keys.** Daylight-saving weeks are 167 or 169 hours long, so dividing elapsed milliseconds by a fixed week misassigns every bucket after a transition.
+21. **Claim only the guarantee the protocol actually provides.** Recording an outcome after an irreversible external action gives at-least-once behaviour, not exactly-once. Name the failure mode in both the interface and the documentation instead of promising the stronger property.
 
 ## Environment and secrets
 
@@ -376,6 +393,7 @@ Add a replayable migration and verify ownership, indexes, cleanup of existing da
 From `jobs-app`:
 
 ```sh
+npm test
 npm run build
 npm audit --audit-level=high
 ```
@@ -405,39 +423,98 @@ Also verify:
 
 ## Known operational follow-ups
 
-- Run `supabase db push` — the Phase 12 networking migration (`20260804120000`) and both Phase 13 migrations are pending on production; the deployed UI depends on them. The missing baseline entry was already repaired into remote history.
-- Configure the reminder secrets: `RESEND_API_KEY` and `REMINDER_CRON_SECRET` as Edge Function secrets, plus the matching Vault secret `reminder_cron_secret`.
-- Deploy the `send-reminders` Edge Function.
+Completed on 4 August 2026: the remote migration history was repaired to include the pre-tracking baseline `20260802144000`, all pending migrations through `20260804171000` were applied, and `send-reminders` was deployed.
+
+Still open:
+
+- Configure the reminder secrets before email digests can send: `RESEND_API_KEY` and `REMINDER_CRON_SECRET` as Edge Function secrets, plus a Vault secret named `reminder_cron_secret` holding the same value. Until then the hourly job runs and receives a "not configured" response, which is the intended idle state.
 - Add `OPENAI_API_KEY` to Supabase Edge Function secrets before live AI acceptance testing.
 - Perform an authenticated production test of matching, AI drafting, full-CV saving, linking, Gmail attachment creation, and cross-device refresh.
 - Enable Supabase leaked-password protection in the Auth security settings. This is an existing security-advisor warning, not a code migration.
-- Run the Supabase security and performance advisors after applying the pending migrations.
+- Run the Supabase security and performance advisors now that the networking, stage-event, and reminder tables exist.
+- Verify the first reminder digest end to end once the secrets are set: check the cron run, the function response, the received email, and the `reminder_deliveries` rows.
 - Confirm the Cloudflare production deployment after each merge.
 
 ## Recommended next improvements
 
 The improvements below are ordered by practical value to an active job search.
 
-### 1. Professional PDF and DOCX output — deferred
+The last two phases added a great deal of data — contacts, interactions, STAR stories, preparation records, and stage history — but each view still shows only its own slice. Interface work now returns more than new features, so it comes first.
 
-**Deferred by decision on 4 August 2026:** CVs and cover letters are produced in separate tools, so in-app document generation is not planned. The scope below is kept for reference in case that decision changes.
+## Interface improvements
 
-**Why it helps:** AI-tailored versions are currently editable text. Employers normally expect a polished PDF or DOCX with stable formatting, contact details, dates, and page breaks.
+### 1. Opportunity detail view with a stage timeline — recommended next
+
+**Why it helps:** An opportunity now has a linked CV, contacts, interview preparation, send history, and stage history, yet nothing shows them together. The application editor is a single modal that already carries opportunity fields, progress, an email draft, AI actions, Google actions, and send history; it is the most crowded surface in the product and it still cannot show the related records.
 
 Suggested scope:
 
-- extract editable text safely from uploaded PDF and DOCX files so an existing CV does not need to be pasted manually;
-- add one or more reusable CV layouts;
-- preview the complete tailored CV before saving;
-- export PDF and DOCX;
-- store the final generated file in the private CV bucket;
-- attach the final document rather than a plain-text fallback in Gmail;
-- retain the source CV and generation metadata;
-- provide a final checklist for contact details, dates, links, spelling, and unsupported AI claims.
+- a routed detail view per application, replacing the modal as the primary editing surface;
+- tabs or sections for details, preparation, people, and history;
+- a visual timeline built from `job_stage_events`, which is already recorded but never displayed;
+- linked contacts and the interview preparation record shown inline, with links back to their own views;
+- send history and the CV actually attached;
+- keep the quick modal for creating a record, so adding an opportunity stays fast.
 
-Keep document generation behind the current Supabase architecture. Do not place private conversion-service keys in the browser.
+### 2. A dashboard that reflects the whole workspace
 
-### 2. Saved searches and a daily vacancy digest
+**Why it helps:** The dashboard still only knows about applications. It does not show networking follow-ups, upcoming interviews, or any sense of weekly progress, so the first screen after sign-in is no longer the most useful one.
+
+Suggested scope:
+
+- one "today" list merging application and networking follow-ups;
+- upcoming interviews with their preparation completeness;
+- this week's activity against a target;
+- recent stage changes as an activity feed;
+- quick actions for adding an opportunity, contact, or interaction.
+
+### 3. Global search and quick actions
+
+**Why it helps:** Records now live in five separate views. Finding one means guessing which view holds it and using that view's own search box.
+
+Suggested scope:
+
+- one search across applications, contacts, CVs, and STAR stories;
+- keyboard-first opening and result navigation;
+- direct actions from results, such as opening an application or logging an interaction;
+- a small set of shortcuts for the most frequent actions.
+
+### 4. Navigation that scales past eleven views
+
+**Why it helps:** The sidebar lists eleven destinations and the mobile strip scrolls horizontally through all of them. Both will keep growing.
+
+Suggested scope:
+
+- group navigation into pipeline, people, preparation, documents, and insights;
+- on mobile, show the few most-used destinations with an overflow menu;
+- remember the last view per device while keeping the synchronized default start page.
+
+### 5. Interface debts worth clearing
+
+**Why they help:** Each is small on its own, but together they decide whether daily use feels solid.
+
+- Bulk selection in the applications table for status changes, exports, and deletion.
+- Richer filtering: priority, work mode, source, date ranges, and saved filter presets.
+- A dark theme.
+- Errors and notices are currently one banner at the top of the workspace; make failures visible next to the action that failed.
+- An accessibility pass on modals: focus trapping, restoring focus on close, `aria-live` announcements for banners, and full keyboard paths for drag-and-drop alternatives.
+- Consider an installable progressive web app so the workspace opens like an application on phones.
+
+## Feature improvements
+
+### 6. Gmail reply and thread tracking
+
+**Why it helps:** Recruiter replies arrive in Gmail and are copied into the tracker by hand. Thread identifiers are already stored in `application_sends.details`, so most of the groundwork exists.
+
+Suggested scope:
+
+- request only the minimum additional Gmail read permission;
+- let the user refresh a specific thread rather than continuously reading the mailbox;
+- show the reply alongside the application and suggest, but never automatically apply, a status change;
+- record the first reply as a response event so response-time analytics stop depending on manual status updates;
+- never expose one user's Google data after a Supabase account transition.
+
+### 7. Saved searches and a daily vacancy digest
 
 **Why it helps:** Repeating the same searches manually consumes time and causes good vacancies to be missed.
 
@@ -450,80 +527,65 @@ Suggested scope:
 - optionally send one daily summary rather than many notifications;
 - track provider errors and pagination limits.
 
-### 3. Contact and networking tracker
+The scheduling and digest-email infrastructure already exists from the reminder phase: an hourly pg_cron job, a Vault-held shared secret, an Edge Function pattern, and a delivery-deduplication table. Extend that pattern rather than adding a second schedule.
 
-**Why it helps:** Referrals and timely follow-ups often produce better results than additional cold applications.
+### 8. Weekly targets and a review ritual
 
-Suggested scope:
-
-- contacts linked to companies and opportunities;
-- relationship type, last interaction, next action, and notes;
-- reusable outreach and thank-you drafts;
-- reminders after recruiter calls and interviews;
-- a networking pipeline separate from the application status.
-
-Delivered by the networking and interview preparation phase, except reusable outreach drafts, which remain open.
-
-### 4. Interview preparation workspace
-
-**Why it helps:** The job description, selected CV, and company notes are already available in one place.
+**Why it helps:** Analytics reports what happened but sets no expectation. A target turns the numbers into a decision about the coming week. This is the one part of the original analytics scope that was not delivered.
 
 Suggested scope:
 
-- likely interview topics derived from the role description;
-- a reusable library of verified STAR examples;
-- company research notes and questions to ask;
-- interview schedule and preparation checklist;
-- post-interview notes and thank-you reminder;
-- AI assistance that may reorganize verified facts but may not invent experience.
+- synchronized weekly targets for applications sent and outreach messages;
+- progress against target on the dashboard, not only in Analytics;
+- a weekly summary covering what was sent, what advanced, and what slipped;
+- optionally attach that summary to the existing reminder digest rather than sending a second email;
+- keep targets private guidance, never a score or a streak that punishes a quiet week.
 
-Delivered by the networking and interview preparation phase, except AI assistance, which remains open.
+### 9. Companies as first-class records
 
-### 5. Job-search analytics and weekly review
-
-**Why it helps:** It shows which sources, CV versions, and activities produce interviews instead of only producing more applications.
-
-Suggested metrics:
-
-- applications per week;
-- response and interview rate;
-- conversion between stages;
-- average time to first response and next stage;
-- results by source, role family, location, and CV version;
-- overdue follow-ups;
-- weekly targets and completed actions.
-
-Do not present small-sample percentages as hiring predictions. Explain the underlying counts.
-
-Delivered by the analytics and server reminders phase, except explicit weekly targets, which remain open.
-
-### 6. Server-delivered reminders
-
-**Why it helps:** Browser notifications currently work only while Opportunity Desk is open.
+**Why it helps:** Company is a free-text string on applications, contacts, and CVs. Nothing connects three applications to the same employer, or a recruiter to the role they are hiring for, and every analytics grouping inherits the inconsistency of typed names.
 
 Suggested scope:
 
-- scheduled Supabase function for due follow-ups;
-- one email or push reminder per action;
-- deduplication so a reminder is not sent twice;
-- timezone-aware delivery window;
-- clear opt-in and unsubscribe controls.
+- a company record with name, site, notes, and normalized matching for existing free text;
+- applications, contacts, and interview research linked to it;
+- one page showing everything about an employer: roles applied for, people involved, and history;
+- careful backfill that groups existing spellings without destroying the original values.
 
-Delivered by the analytics and server reminders phase as an opt-in daily email digest through Resend.
+### 10. Complete backup coverage
 
-### 7. Gmail reply and thread tracking
-
-**Why it helps:** It can connect recruiter replies to an opportunity and reduce manual status updates.
+**Why it helps:** Backup and restore still cover applications only. Contacts, interactions, STAR stories, and interview preparation now hold a great deal of irreplaceable work that exists in exactly one place.
 
 Suggested scope:
 
-- store Gmail thread IDs after sending;
-- request only the minimum additional Gmail permission;
-- let the user refresh a specific thread rather than continuously reading the mailbox;
-- suggest, but do not automatically apply, status and follow-up changes;
-- never expose one user's Google data after a Supabase account transition.
+- extend the JSON backup to every user-owned table, with a version marker;
+- preserve each `data` JSON column unchanged, as the current restore already does;
+- restore with the same optimistic-lock and ownership checks used elsewhere;
+- state clearly in the interface what is and is not included, including CV files.
 
-### 8. Stronger CV-to-job matching
+### 11. Outreach message templates
+
+**Why it helps:** The networking phase deliberately left this open. Introductions, thank-you notes, and follow-ups are rewritten from scratch each time.
+
+Suggested scope:
+
+- reusable templates with placeholders for person, company, and role;
+- insert into the application email draft or copy for LinkedIn;
+- one-click logging of the resulting interaction;
+- a small starter set covering introduction, thank-you, and check-in.
+
+### 12. AI assistance for interview preparation
+
+**Why it helps:** The other half of the deferred interview scope. Likely topics are currently keyword-derived; a model could turn them into practice questions and help shape existing evidence.
+
+Suggested scope:
+
+- generate likely questions from the job description through the existing protected Edge Function pattern;
+- reorganize verified STAR stories toward a specific role;
+- never invent experience: every generated sentence must trace to a saved story, and the interface must say so;
+- reuse the existing per-user generation ledger and rolling limit.
+
+### 13. Stronger CV-to-job matching
 
 **Why it helps:** The current score is deliberately a simple keyword-overlap guide.
 
@@ -536,7 +598,7 @@ Suggested scope:
 - skill-gap learning plan;
 - no “chance of hire” claim or opaque ATS prediction.
 
-### 9. More job providers through a protected search service
+### 14. More job providers through a protected search service
 
 **Why it helps:** More sources expand coverage, but private provider keys and quotas cannot live in the browser.
 
@@ -547,15 +609,24 @@ Suggested scope:
 - caching, pagination, quotas, and provider-specific errors;
 - the same per-user duplicate protection already used for Remotive and Arbeitnow.
 
+## Deferred scope
+
+### Professional PDF and DOCX output
+
+**Deferred by decision on 4 August 2026:** CVs and cover letters are produced in separate tools, so in-app document generation is not planned. The scope is kept here in case that decision changes, and the unmerged foundation branch `codex/cv-document-foundation` still holds a `cv_artifacts` catalog with storage cleanup.
+
+Original scope: extract editable text from uploaded PDF and DOCX files, add reusable layouts, preview a tailored CV, export PDF and DOCX into the private bucket, attach the generated document in Gmail instead of a plain-text fallback, retain source and generation metadata, and provide a final review checklist. Document generation would stay behind the current architecture, with no private conversion-service keys in the browser.
+
 ## Suggested roadmap
 
-Reordered on 4 August 2026: professional CV output (previously Phase 10) is deferred because CVs and cover letters are produced in separate tools.
+Delivered so far: networking and interview preparation (PR #13), then analytics and server reminders (PR #14). Professional CV output remains deferred.
 
-1. **Phase 12: Networking and interview preparation** — merged in PR #13; improves conversion after finding an opportunity.
-2. **Phase 13: Analytics and server reminders** — in progress in this branch; guides weekly effort and prevents missed follow-ups, with the revived `job_stage_events` history feeding conversion metrics.
-3. **Phase 11: Saved searches and daily digest** — reduce repetitive searching and surface new vacancies.
+1. **Phase 14: Opportunity detail and workspace navigation** — a routed detail view with the stage timeline, a dashboard covering the whole workspace, and global search. This is the largest gap between what the data model knows and what the interface shows.
+2. **Phase 15: Gmail reply and thread tracking** — the biggest remaining reduction in manual work, and it makes response-time analytics trustworthy without relying on manual status updates.
+3. **Phase 16: Saved searches and a daily vacancy digest** — reuses the pg_cron and digest-email infrastructure that already exists.
+4. **Phase 17: Targets, companies, and complete backup** — closes the analytics loop, gives grouping a stable key, and removes the remaining data-loss risk.
 
-This order improves interview conversion first, then measures what works, and finally increases opportunity coverage.
+This order fixes how existing work is seen and acted on, then reduces manual maintenance, then widens the funnel, and finally strengthens the record itself.
 
 ## Definition of done for any future phase
 
