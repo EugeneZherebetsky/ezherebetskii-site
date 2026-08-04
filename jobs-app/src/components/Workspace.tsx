@@ -166,6 +166,26 @@ function pendingSendStorageKey(userId: string) {
   return `${PENDING_SEND_PREFIX}${userId}`
 }
 
+// The API caps every request at its configured max_rows (1000), so stage
+// history must be paged; a single capped ascending query would permanently
+// hide the newest events once an account exceeds the cap.
+async function fetchAllStageEvents(): Promise<{ data: JobStageEvent[] | null; error: { message: string } | null }> {
+  const pageSize = 1000
+  const events: JobStageEvent[] = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('job_stage_events')
+      .select('*')
+      .order('occurred_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (error) return { data: null, error }
+    const page = (data ?? []) as JobStageEvent[]
+    events.push(...page)
+    if (page.length < pageSize) return { data: events, error: null }
+  }
+}
+
 function readPendingSend(userId: string): ApplicationSend | null {
   try {
     const raw = localStorage.getItem(pendingSendStorageKey(userId))
@@ -238,7 +258,7 @@ export function Workspace({ session }: WorkspaceProps) {
         .limit(1, { referencedTable: 'contact_interactions' }),
       supabase.from('star_stories').select('*').order('updated_at', { ascending: false }),
       supabase.from('interview_preps').select('*'),
-      supabase.from('job_stage_events').select('*').order('occurred_at', { ascending: true }).limit(5000),
+      fetchAllStageEvents(),
     ])
 
     if (jobsResult.error) setError(jobsResult.error.message)
@@ -266,7 +286,7 @@ export function Workspace({ session }: WorkspaceProps) {
     else setInterviewPreps((prepsResult.data ?? []) as InterviewPrep[])
 
     if (stageEventsResult.error) setError(stageEventsResult.error.message)
-    else setStageEvents((stageEventsResult.data ?? []) as JobStageEvent[])
+    else setStageEvents(stageEventsResult.data ?? [])
 
     if (settingsResult.error) {
       setError(settingsResult.error.message)

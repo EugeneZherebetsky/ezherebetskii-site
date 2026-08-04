@@ -172,6 +172,7 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - `job_stage_events` records immutable application-stage history: a `created` event on insert and a `status_change` event on every status transition, written by a protected trigger.
 - Existing applications were backfilled with `backfill_current_state` events whose details mark them as excluded from duration metrics; reaching a state still counts for funnel purposes.
 - The Analytics view computes everything client-side: applications per week (by applied date), response/interview/offer rates, a stage funnel of states ever reached, median days from applying to first response (live-recorded events only), results by source and by CV version, and overdue follow-up counts.
+- Stage events are fetched in pages because the API caps every request at `max_rows`; a single capped query would silently truncate history. Weekly buckets are matched on calendar week keys, not elapsed milliseconds, so daylight-saving weeks do not shift counts.
 - Percentages are never shown without their underlying counts (`shareLabel`), and the view states explicitly that small samples are not predictions.
 
 ### Server-delivered reminders

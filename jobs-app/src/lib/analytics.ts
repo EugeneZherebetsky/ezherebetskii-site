@@ -57,28 +57,37 @@ function startOfWeek(date: Date) {
   return result
 }
 
+// Calendar identity of a week's Monday. Buckets are matched on this key, not
+// on elapsed milliseconds, because weeks that cross a daylight-saving
+// transition are not exactly 168 hours long.
+function weekKey(weekStart: Date) {
+  return `${weekStart.getFullYear()}-${weekStart.getMonth()}-${weekStart.getDate()}`
+}
+
 /** Applications per calendar week (Monday-based) using the user-entered applied date. */
 export function weeklyApplications(jobs: Job[], weeks = 8, now = new Date()): WeeklyCount[] {
   const currentWeek = startOfWeek(now)
-  const buckets: WeeklyCount[] = []
+  const ordered: WeeklyCount[] = []
+  const buckets = new Map<string, WeeklyCount>()
   for (let index = weeks - 1; index >= 0; index -= 1) {
     const weekStart = new Date(currentWeek)
     weekStart.setDate(weekStart.getDate() - index * 7)
-    buckets.push({
+    const bucket = {
       weekStart: weekStart.toISOString(),
       label: `${weekStart.getDate()} ${weekStart.toLocaleString(undefined, { month: 'short' })}`,
       count: 0,
-    })
+    }
+    ordered.push(bucket)
+    buckets.set(weekKey(weekStart), bucket)
   }
-  const firstStart = new Date(buckets[0].weekStart).getTime()
   jobs.forEach((job) => {
     if (!job.applied_at) return
     const applied = new Date(`${job.applied_at}T00:00`)
     if (Number.isNaN(applied.getTime())) return
-    const offset = Math.floor((startOfWeek(applied).getTime() - firstStart) / (7 * 86_400_000))
-    if (offset >= 0 && offset < buckets.length) buckets[offset].count += 1
+    const bucket = buckets.get(weekKey(startOfWeek(applied)))
+    if (bucket) bucket.count += 1
   })
-  return buckets
+  return ordered
 }
 
 function reliable(event: JobStageEvent) {

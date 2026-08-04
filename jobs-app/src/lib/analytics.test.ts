@@ -110,6 +110,30 @@ describe('weeklyApplications', () => {
     expect(weeks[2].count).toBe(2)
     expect(weeks[0].count + weeks[1].count).toBe(0)
   })
+
+  it('steps buckets by calendar weeks across daylight-saving months', () => {
+    // 30 weeks ending in August span both spring transitions; every bucket
+    // must start exactly 7 calendar days after the previous one even where a
+    // local week is not 168 hours long.
+    const weeks = weeklyApplications([], 30, new Date('2026-08-04T12:00:00'))
+    for (let index = 1; index < weeks.length; index += 1) {
+      const previous = new Date(weeks[index - 1].weekStart)
+      const expected = new Date(previous.getFullYear(), previous.getMonth(), previous.getDate() + 7)
+      const current = new Date(weeks[index].weekStart)
+      expect([current.getFullYear(), current.getMonth(), current.getDate()])
+        .toEqual([expected.getFullYear(), expected.getMonth(), expected.getDate()])
+    }
+
+    // A job applied on the Monday of a transition week still lands in its own
+    // calendar bucket rather than sliding into a neighbour.
+    const applied = weeklyApplications([job({ id: 'dst', applied_at: '2026-03-30' })], 30, new Date('2026-08-04T12:00:00'))
+    const target = applied.find((week) => {
+      const start = new Date(week.weekStart)
+      return start.getFullYear() === 2026 && start.getMonth() === 2 && start.getDate() === 30
+    })
+    expect(target?.count).toBe(1)
+    expect(applied.reduce((total, week) => total + week.count, 0)).toBe(1)
+  })
 })
 
 describe('medianDaysToFirstResponse', () => {
