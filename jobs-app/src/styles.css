@@ -267,11 +267,45 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
 .review-notes { padding: 14px 16px; border: 1px solid var(--line); border-radius: 11px; background: #f8fafc; }
 .review-notes ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 11px; line-height: 1.55; }
 
+.stage-summary { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 18px 0; }
+.stage-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; }
+.stage-chip strong { color: var(--ink); }
+.stage-chip.active { border-color: var(--blue); background: #e8f1ff; color: var(--blue); }
+.stage-chip.active strong { color: var(--blue); }
+.contact-links { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; }
+.contact-links a { color: var(--blue); overflow-wrap: anywhere; }
+.contact-next { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: #f8fafc; font-size: 12px; }
+.contact-next em { color: var(--blue); font-size: 11px; font-style: normal; white-space: nowrap; }
+.contact-next em.overdue { color: var(--red); }
+.interaction-log { display: grid; gap: 12px; }
+.interaction-add { display: grid; grid-template-columns: minmax(120px, .5fr) minmax(150px, .6fr) minmax(0, 1.6fr) auto; align-items: end; gap: 12px; }
+.interaction-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.interaction-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; padding: 11px 0; border-bottom: 1px solid #edf0f4; }
+.interaction-list li:last-child { border-bottom: 0; }
+.interaction-list li > span { color: var(--muted); font-size: 11px; }
+.interaction-list li > span strong { color: var(--ink); }
+.interaction-list li > p { grid-column: 1; margin: 0; font-size: 13px; font-weight: 500; line-height: 1.5; }
+.interaction-list li > .button { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+.prep-layout { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(0, 1.2fr); gap: 18px; align-items: start; margin-bottom: 18px; }
+.prep-panel { display: grid; gap: 17px; }
+.prep-when { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.prep-block { display: grid; gap: 9px; }
+.prep-block > strong { font-size: 13px; }
+.topic-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.topic-chips span { padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); font-size: 12px; }
+.ranked-stories { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.ranked-stories li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: #f8fafc; font-size: 13px; font-weight: 600; }
+.ranked-stories em { color: var(--blue); font-size: 11px; font-style: normal; white-space: nowrap; }
+.checklist-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 16px; }
+.checklist-grid .check-label { font-weight: 500; font-size: 12px; color: #344054; }
+.attention-list button.selected { background: #e8f1ff; }
+
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 210px minmax(0, 1fr); }
   .dashboard { padding: 30px 22px 60px; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
+  .prep-layout { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
@@ -296,6 +330,9 @@ td > span, td small { margin-top: 4px; color: var(--muted); }
   .sync-retry-banner .button { width: 100%; }
   .tailor-inputs { grid-template-columns: 1fr; }
   .ai-actions { grid-template-columns: 1fr; }
+  .interaction-add { grid-template-columns: 1fr; align-items: stretch; }
+  .checklist-grid { grid-template-columns: 1fr; }
+  .stage-summary { padding: 12px 12px 0; }
 }
 
 @media (max-width: 560px) {
