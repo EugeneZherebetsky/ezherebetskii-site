@@ -431,11 +431,12 @@ export const EMPTY_CV: CVDraft = {
   tailored_company: '',
 }
 
-export const OUTREACH_STATUSES = ['draft', 'sent', 'failed'] as const
+export const OUTREACH_STATUSES = ['draft', 'sending', 'sent', 'failed'] as const
 export type OutreachStatus = (typeof OUTREACH_STATUSES)[number]
 
 export const OUTREACH_STATUS_LABELS: Record<OutreachStatus, string> = {
   draft: 'Draft',
+  sending: 'Outcome unknown',
   sent: 'Sent',
   failed: 'Failed',
 }
@@ -468,6 +469,8 @@ export type OutreachEmail = {
   body: string
   status: OutreachStatus
   sent_at: string | null
+  send_attempt_id: string | null
+  send_attempted_at: string | null
   provider: string
   provider_message_id: string | null
   provider_thread_id: string | null

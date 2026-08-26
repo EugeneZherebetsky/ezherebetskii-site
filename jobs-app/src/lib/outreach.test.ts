@@ -25,6 +25,8 @@ function email(overrides: Partial<OutreachEmail>): OutreachEmail {
     body: 'Dear Dana,',
     status: 'sent',
     sent_at: '2026-08-01T10:00:00.000Z',
+    send_attempt_id: null,
+    send_attempted_at: null,
     provider: 'gmail',
     provider_message_id: 'msg-1',
     provider_thread_id: 'thread-1',
@@ -92,6 +94,14 @@ describe('outreachMatches', () => {
     expect(outreachMatches(sent, '', 'awaiting')).toBe(true)
     expect(outreachMatches(email({ reply_status: 'replied' }), '', 'replied')).toBe(true)
   })
+
+  it('surfaces an unresolved send attempt under its own filter only', () => {
+    const inFlight = email({ status: 'sending', sent_at: null, send_attempt_id: 'a', send_attempted_at: '2026-08-02T10:00:00.000Z' })
+    expect(outreachMatches(inFlight, '', 'sending')).toBe(true)
+    expect(outreachMatches(inFlight, '', 'all')).toBe(true)
+    expect(outreachMatches(inFlight, '', 'draft')).toBe(false)
+    expect(outreachMatches(inFlight, '', 'awaiting')).toBe(false)
+  })
 })
 
 describe('outreachSummary', () => {
@@ -101,8 +111,16 @@ describe('outreachSummary', () => {
       email({ id: 'b', company: 'calderys ', reply_status: 'replied' }),
       email({ id: 'c', company: 'Other Co', reply_status: 'no_reply' }),
       email({ id: 'd', status: 'draft', sent_at: null, company: 'Never Sent' }),
+      email({ id: 'e', status: 'sending', sent_at: null, company: 'Unknown Co', send_attempt_id: 'attempt-1', send_attempted_at: '2026-08-02T10:00:00.000Z' }),
     ])
-    expect(summary).toEqual({ drafts: 1, sent: 3, awaiting: 1, replied: 1, noReply: 1, companies: 2 })
+    expect(summary).toEqual({ drafts: 1, unknown: 1, sent: 3, awaiting: 1, replied: 1, noReply: 1, companies: 2 })
+  })
+
+  it('never counts an unresolved attempt as sent', () => {
+    const summary = outreachSummary([email({ status: 'sending', sent_at: null, send_attempt_id: 'a', send_attempted_at: '2026-08-02T10:00:00.000Z' })])
+    expect(summary.sent).toBe(0)
+    expect(summary.unknown).toBe(1)
+    expect(summary.companies).toBe(0)
   })
 })
 
@@ -114,6 +132,7 @@ describe('dueOutreachFollowUps', () => {
       email({ id: 'answered', follow_up_at: '2026-08-05T09:00:00.000Z', reply_status: 'replied' }),
       email({ id: 'unscheduled', follow_up_at: null }),
       email({ id: 'draft', status: 'draft', sent_at: null, follow_up_at: '2026-08-01T09:00:00.000Z' }),
+      email({ id: 'in-flight', status: 'sending', sent_at: null, send_attempt_id: 'a', send_attempted_at: '2026-08-02T10:00:00.000Z', follow_up_at: '2026-08-02T09:00:00.000Z' }),
     ])
     expect(due.map((item) => item.id)).toEqual(['sooner', 'later'])
   })

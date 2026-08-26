@@ -198,8 +198,13 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 
 - `outreach_emails` records a message written directly to a leader at a company of interest, whether or not a role is advertised.
 - The row stores the **exact subject and body that were sent**, not a summary. A database trigger freezes the delivered content, recipient, company, attachment and message id once `status` is `sent`; only reply state, follow-up date and notes stay editable.
+- The one exception is `cv_id`, which may become null. Deleting a CV nulls it through `ON DELETE SET NULL`, and refusing that change rolled back the whole CV deletion, so deleting any CV ever attached to outreach failed. The reference may now be cleared but never repointed at a different CV, and `attachment_filename` still records what was sent.
 - Sending reuses the existing Gmail path: `requestGoogleAccess`, `buildRawEmail`, `sendGmailMessage`, and `cvEmailAttachment` for the CV.
-- The row is always persisted as a draft **before** Gmail is called. If Gmail accepts the message but the record update fails, the row already exists, so the retry updates it rather than sending a second message. The pending message id is held in a per-user browser queue, and sending is blocked until it is resolved.
+- A send attempt is committed to the database **before** Gmail is called: the row moves to `sending` with a `send_attempt_id` and `send_attempted_at`. Recording the provider id only after a successful response was not enough, because Gmail can accept a message while its response is lost, which left an ordinary draft that a second press would deliver twice.
+- While a row is `sending` its content is frozen on every device, it cannot be sent again, and it may only resolve to `sent` or back to `draft`.
+- A Gmail error built from an actual HTTP response proves the request was refused, so the row returns to draft automatically. Only a transport failure leaves the outcome genuinely unknown.
+- An unknown outcome is resolved by the user, not guessed: the app holds only the `gmail.send` scope and cannot read the mailbox, so it asks them to look in their own Sent folder and then record sent or not sent. Reading the mailbox to reconcile automatically needs an additional scope and belongs with Gmail thread tracking.
+- If Gmail succeeds and only the record update fails, the pending message id is held in a per-user browser queue and the retry updates the existing row rather than sending again.
 - `recordOutreachSent` updates only rows still in `draft`, and treats an already-recorded row with the same message id as success, so a duplicate retry is harmless.
 - A message can be linked to a saved contact, which fills the recipient fields, and to the CV that was attached.
 - Follow-up dates appear in Reminders, in browser notifications, and in the scheduled email digest. A message marked as replied stops appearing.
@@ -328,6 +333,8 @@ Supabase considers an update that changes zero rows successful, so checking only
 | `20260804171000_add_server_reminders.sql` | Adds email-reminder settings, the delivery dedup log, and the hourly pg_cron invocation of `send-reminders`. |
 | `20260804180000_add_cv_blocks.sql` | Adds reusable CV blocks with RLS, ordering, deletion broadcast, and Realtime. |
 | `20260804190000_add_outreach_emails.sql` | Adds speculative outreach emails, freezes sent content, and lets outreach follow-ups enter the reminder digest. |
+| `20260804200000_harden_outreach_send.sql` | Adds the in-flight `sending` state and allows a deleted CV to null its outreach reference. |
+| `20260804201000_allow_outreach_attempt_reset.sql` | Lets the send attempt identifier be cleared when an unsent message returns to draft. |
 
 For a schema change:
 
@@ -366,6 +373,8 @@ These rules come from defects already found during review. Treat them as regress
 20. **Bucket calendar periods by calendar keys.** Daylight-saving weeks are 167 or 169 hours long, so dividing elapsed milliseconds by a fixed week misassigns every bucket after a transition.
 21. **Never offer a retry that repeats a step which already succeeded.** After a multi-step save, the failure message must name the step that failed and the recovery path for it. Re-running the whole action duplicates the committed record.
 22. **Claim only the guarantee the protocol actually provides.** Recording an outcome after an irreversible external action gives at-least-once behaviour, not exactly-once. Name the failure mode in both the interface and the documentation instead of promising the stronger property.
+23. **Persist the attempt before an irreversible external call, not after it.** Recording the outcome afterwards leaves a window in which the call succeeded but nothing local knows, so a retry repeats it. Commit an in-flight marker first, freeze the payload while it is open, and resolve unknown outcomes explicitly rather than guessing.
+24. **A trigger that guards a column must allow what a foreign key does to it.** `ON DELETE SET NULL` performs an update; refusing it rolls back the parent delete and silently breaks an unrelated feature.
 
 ## Environment and secrets
 

@@ -77,7 +77,7 @@ Every view is reachable on mobile through the horizontal navigation strip.
 ### Speculative outreach
 
 - Write directly to a leader at a company you want to work for, whether or not anything is advertised.
-- Send through the Gmail connection you already use for applications, with a CV attached.
+- Send through the Gmail connection you already use for applications, with a CV attached. If a send is interrupted, the message is held with an unknown outcome and asks you to check your Sent folder rather than risking a duplicate.
 - The exact subject and message you sent are stored and locked, so a follow-up months later starts from what you actually wrote rather than from memory.
 - Record whether they replied, keep private notes, and schedule the follow-up, which then appears in Reminders and in the daily digest.
 - Filter by awaiting reply, replied, or no reply, and see how many companies you have approached.

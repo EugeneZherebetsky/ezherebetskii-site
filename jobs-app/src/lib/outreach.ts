@@ -42,12 +42,13 @@ export function followUpDateInput(days = DEFAULT_FOLLOW_UP_DAYS, from = new Date
   return toLocalDateTimeInput(target.toISOString())
 }
 
-export type OutreachFilter = 'all' | 'draft' | 'awaiting' | 'replied' | 'no_reply'
+export type OutreachFilter = 'all' | 'draft' | 'sending' | 'awaiting' | 'replied' | 'no_reply'
 
 export function outreachMatches(email: OutreachEmail, search: string, filter: OutreachFilter) {
   const needle = search.trim().toLowerCase()
   const matchesFilter = filter === 'all'
     || (filter === 'draft' && email.status === 'draft')
+    || (filter === 'sending' && email.status === 'sending')
     || (email.status === 'sent' && email.reply_status === filter)
   const matchesSearch = !needle || [
     email.company,
@@ -63,6 +64,7 @@ export function outreachMatches(email: OutreachEmail, search: string, filter: Ou
 
 export type OutreachSummary = {
   drafts: number
+  unknown: number
   sent: number
   awaiting: number
   replied: number
@@ -75,6 +77,7 @@ export function outreachSummary(emails: OutreachEmail[]): OutreachSummary {
   const replyCount = (status: ReplyStatus) => sent.filter((email) => email.reply_status === status).length
   return {
     drafts: emails.filter((email) => email.status === 'draft').length,
+    unknown: emails.filter((email) => email.status === 'sending').length,
     sent: sent.length,
     awaiting: replyCount('awaiting'),
     replied: replyCount('replied'),

@@ -102,6 +102,26 @@ export function requestGoogleAccess(userId: string, clientId: string) {
   })
 }
 
+/**
+ * An error built from an actual HTTP response, which proves the request
+ * reached Google and was refused. A transport failure produces an ordinary
+ * error instead, and cannot prove whether the request was carried out.
+ */
+export class GoogleResponseError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'GoogleResponseError'
+    this.status = status
+  }
+}
+
+/** True when Google answered, so the request definitely did not take effect. */
+export function isGoogleRefusal(error: unknown): error is GoogleResponseError {
+  return error instanceof GoogleResponseError
+}
+
 async function googleApiError(response: Response, service: string) {
   let detail = ''
   try {
@@ -112,7 +132,7 @@ async function googleApiError(response: Response, service: string) {
     detail = ''
   }
   if (response.status === 401) clearGoogleAccess()
-  return new Error(`${service} returned HTTP ${response.status}${detail ? `: ${detail}` : '.'}`)
+  return new GoogleResponseError(`${service} returned HTTP ${response.status}${detail ? `: ${detail}` : '.'}`, response.status)
 }
 
 export async function createCalendarEvent(accessToken: string, draft: JobDraft, timezone: string) {

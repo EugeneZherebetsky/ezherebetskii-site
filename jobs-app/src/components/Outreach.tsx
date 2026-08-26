@@ -14,6 +14,7 @@ type OutreachViewProps = {
 const FILTERS: Array<{ key: OutreachFilter; label: string }> = [
   { key: 'all', label: 'All' },
   { key: 'draft', label: 'Drafts' },
+  { key: 'sending', label: 'Outcome unknown' },
   { key: 'awaiting', label: 'Awaiting reply' },
   { key: 'replied', label: 'Replied' },
   { key: 'no_reply', label: 'No reply' },
@@ -81,12 +82,12 @@ export function OutreachView({ emails, busy, onCompose, onOpen, onDelete }: Outr
                     </td>
                     <td>
                       <strong>{email.subject}</strong>
-                      <span>{email.status === 'sent' && email.sent_at ? `Sent ${formatDateTime(email.sent_at)}` : `Draft, updated ${formatDateTime(email.updated_at)}`}</span>
+                      <span>{email.status === 'sent' && email.sent_at ? `Sent ${formatDateTime(email.sent_at)}` : email.status === 'sending' ? `Send attempted ${email.send_attempted_at ? formatDateTime(email.send_attempted_at) : ''}` : `Draft, updated ${formatDateTime(email.updated_at)}`}</span>
                       {email.attachment_filename && <span className="sent-summary">Attached {email.attachment_filename}</span>}
                     </td>
                     <td>
                       <div className="badges">
-                        <span className={`status status-${email.status === 'sent' ? 'applied' : 'saved'}`}>{OUTREACH_STATUS_LABELS[email.status]}</span>
+                        <span className={`status status-${email.status === 'sent' ? 'applied' : email.status === 'sending' ? 'on_hold' : 'saved'}`}>{OUTREACH_STATUS_LABELS[email.status]}</span>
                         {email.status === 'sent' && <span className="tag">{REPLY_STATUS_LABELS[email.reply_status]}</span>}
                       </div>
                     </td>
@@ -97,7 +98,7 @@ export function OutreachView({ emails, busy, onCompose, onOpen, onDelete }: Outr
                     </td>
                     <td>
                       <div className="row-actions">
-                        <button className="button secondary" onClick={() => onOpen(email)}>{email.status === 'sent' ? 'View email' : 'Edit draft'}</button>
+                        <button className="button secondary" onClick={() => onOpen(email)}>{email.status === 'sent' ? 'View email' : email.status === 'sending' ? 'Resolve outcome' : 'Edit draft'}</button>
                         <button className="button danger" disabled={busy} onClick={() => void onDelete(email)}>Delete</button>
                       </div>
                     </td>

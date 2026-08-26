@@ -21,6 +21,8 @@ type OutreachFormProps = {
   initial: OutreachDraft
   /** Set when an already-sent message is open; its content is then read-only. */
   sent: OutreachEmail | null
+  /** Set when a send attempt was made but its outcome is unknown. */
+  inFlight: OutreachEmail | null
   title: string
   busy: boolean
   error: string
@@ -33,16 +35,18 @@ type OutreachFormProps = {
   onSend: (draft: OutreachDraft) => Promise<void>
   onUpdateOutcome: (email: OutreachEmail, outcome: OutreachOutcome) => Promise<void>
   onRetrySync: () => Promise<void>
+  /** Resolves a message whose Gmail response was lost. */
+  onResolveAttempt: (email: OutreachEmail, delivered: boolean) => Promise<void>
 }
 
 export function OutreachForm({
-  initial, sent, title, busy, error, cvs, contacts, googleConfigured, syncPending,
-  onCancel, onSaveDraft, onSend, onUpdateOutcome, onRetrySync,
+  initial, sent, inFlight, title, busy, error, cvs, contacts, googleConfigured, syncPending,
+  onCancel, onSaveDraft, onSend, onUpdateOutcome, onRetrySync, onResolveAttempt,
 }: OutreachFormProps) {
   const [draft, setDraft] = useState<OutreachDraft>(initial)
   const [replyStatus, setReplyStatus] = useState<ReplyStatus>(sent?.reply_status ?? 'awaiting')
   const [validationError, setValidationError] = useState('')
-  const readOnly = Boolean(sent)
+  const readOnly = Boolean(sent) || Boolean(inFlight)
 
   function field<K extends keyof OutreachDraft>(key: K, value: OutreachDraft[K]) {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -104,10 +108,23 @@ export function OutreachForm({
         </header>
 
         <form className="job-form" onSubmit={(event) => { event.preventDefault(); if (!readOnly) void saveDraft() }}>
-          {readOnly && sent && (
+          {sent && (
             <div className="outreach-sent-banner full">
               <strong>Sent {sent.sent_at ? formatDateTime(sent.sent_at) : ''}</strong>
               <span>This is the message exactly as it was delivered, so its content can no longer be changed. Record what happened next below.</span>
+            </div>
+          )}
+
+          {inFlight && (
+            <div className="outreach-unknown-banner full" role="alert">
+              <strong>Outcome unknown — do not send again yet</strong>
+              <span>
+                Gmail was asked to send this message {inFlight.send_attempted_at ? `at ${formatDateTime(inFlight.send_attempted_at)}` : ''}, but the reply never arrived, so it may or may not have been delivered. Its text is locked until you say which. Opportunity Desk can only send email, not read your mailbox, so please check your Gmail Sent folder for “{inFlight.subject}”.
+              </span>
+              <div className="button-row">
+                <button className="button secondary" type="button" disabled={busy} onClick={() => void onResolveAttempt(inFlight, true)}>It is in Sent — record as sent</button>
+                <button className="button secondary" type="button" disabled={busy} onClick={() => void onResolveAttempt(inFlight, false)}>Not in Sent — return to draft</button>
+              </div>
             </div>
           )}
 
@@ -143,8 +160,8 @@ export function OutreachForm({
           </label>
           <label className="full">Message<textarea className="outreach-body" required rows={16} value={draft.body} disabled={readOnly} onChange={(event) => field('body', event.target.value)} /></label>
 
-          <h3 className="form-section-title full">What happened next</h3>
-          {readOnly && sent ? (
+          {!inFlight && <h3 className="form-section-title full">What happened next</h3>}
+          {inFlight ? null : sent ? (
             <>
               <label>Reply
                 <select value={replyStatus} onChange={(event) => setReplyStatus(event.target.value as ReplyStatus)}>
@@ -172,7 +189,7 @@ export function OutreachForm({
 
           <div className="form-actions full">
             <button className="button secondary" type="button" disabled={busy} onClick={onCancel}>Close</button>
-            {readOnly && sent ? (
+            {inFlight ? null : sent ? (
               <button className="button primary" type="button" disabled={busy} onClick={() => void onUpdateOutcome(sent, { reply_status: replyStatus, follow_up_at: draft.follow_up_at, notes: draft.notes })}>{busy ? 'Saving…' : 'Save outcome'}</button>
             ) : (
               <>

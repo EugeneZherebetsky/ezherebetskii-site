@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
-import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, hasGoogleAccess, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
+import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, hasGoogleAccess, isGoogleRefusal, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
 import {
   ACTIVE_STATUSES,
   BOARD_COLUMNS,
@@ -825,7 +825,7 @@ export function Workspace({ session }: WorkspaceProps) {
         attachment_filename: record.attachment_filename,
       })
       .eq('id', record.outreach_id)
-      .eq('status', 'draft')
+      .eq('status', 'sending')
       .select('id')
       .maybeSingle()
     if (updateError) throw updateError
@@ -888,6 +888,9 @@ export function Workspace({ session }: WorkspaceProps) {
     setError('')
     setNotice('')
     const payload = outreachDraftToPayload(draft)
+    // Tracks whether the attempt was committed, which decides whether a
+    // failure leaves the outcome genuinely unknown.
+    let inFlight = false
 
     try {
       const saved = recordBeingEdited === 'new'
@@ -900,10 +903,45 @@ export function Workspace({ session }: WorkspaceProps) {
       const cv = payload.cv_id ? cvs.find((candidate) => candidate.id === payload.cv_id) : undefined
       if (payload.cv_id && !cv) throw new Error('The selected CV is no longer available. Choose another before sending.')
 
+      // Everything that can fail without delivering anything happens first, so
+      // the window in which the outcome is unknowable is only the Gmail call.
       const token = await requestGoogleAccess(session.user.id, googleClientId())
       setGoogleConnected(true)
       const attachment = cv ? await cvEmailAttachment(cv) : null
-      const gmailMessage = await sendGmailMessage(token, buildRawEmail(payload.recipient_email, payload.subject, payload.body, attachment))
+      const raw = buildRawEmail(payload.recipient_email, payload.subject, payload.body, attachment)
+
+      // The attempt is committed before Gmail is called. If the response is
+      // lost the row stays in `sending`, which freezes its content on every
+      // device and refuses a second send until the outcome is recorded.
+      const attemptedAt = new Date().toISOString()
+      const { data: claimed, error: claimError } = await supabase
+        .from('outreach_emails')
+        .update({ status: 'sending', send_attempt_id: crypto.randomUUID(), send_attempted_at: attemptedAt })
+        .eq('id', outreachId)
+        .eq('status', 'draft')
+        .select('id')
+        .maybeSingle()
+      if (claimError) throw claimError
+      if (!claimed) throw new Error('This message is already being sent, or has been sent, on another device. Reload before trying again.')
+      inFlight = true
+
+      let gmailMessage: { id: string; threadId?: string }
+      try {
+        gmailMessage = await sendGmailMessage(token, raw)
+      }
+      catch (sendError) {
+        if (isGoogleRefusal(sendError)) {
+          // Gmail answered and refused, so nothing was delivered and the
+          // message can safely go back to being an editable draft.
+          await supabase
+            .from('outreach_emails')
+            .update({ status: 'draft', send_attempt_id: null, send_attempted_at: null })
+            .eq('id', outreachId)
+            .eq('status', 'sending')
+          inFlight = false
+        }
+        throw sendError
+      }
 
       const record: PendingOutreachRecord = {
         outreach_id: outreachId,
@@ -926,12 +964,52 @@ export function Workspace({ session }: WorkspaceProps) {
     }
     catch (caught) {
       setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
-      setError(caught instanceof Error ? caught.message : 'The outreach email could not be sent.')
+      const message = caught instanceof Error ? caught.message : 'The outreach email could not be sent.'
+      setError(isGoogleRefusal(caught) || !inFlight
+        ? message
+        : `${message} Gmail may still have delivered this message, so it is held with an unknown outcome. Check your Sent folder and record the result rather than sending again.`)
       await loadWorkspace()
     }
     finally {
       setBusy(false)
     }
+  }
+
+  /**
+   * Resolves a message whose Gmail response was lost. The user checks their
+   * own Sent folder, because the app holds only the send scope and cannot
+   * read the mailbox to find out.
+   */
+  async function resolveOutreachAttempt(email: OutreachEmail, delivered: boolean) {
+    const question = delivered
+      ? `Confirm the email to ${email.recipient_email} was delivered? It will be recorded as sent, without a Gmail message id.`
+      : `Confirm the email to ${email.recipient_email} was NOT delivered? It returns to a draft you can edit and send. Sending again when it did arrive would deliver a duplicate.`
+    if (!window.confirm(question)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = delivered
+      ? {
+          status: 'sent' as const,
+          sent_at: email.send_attempted_at ?? new Date().toISOString(),
+          data: { ...email.data, delivery_confirmed_manually: true },
+        }
+      : { status: 'draft' as const, send_attempt_id: null, send_attempted_at: null }
+    const { data, error: updateError } = await supabase
+      .from('outreach_emails')
+      .update(payload)
+      .eq('id', email.id)
+      .eq('status', 'sending')
+      .select('id')
+      .maybeSingle()
+    if (updateError) setError(updateError.message)
+    else if (!data) setError('This message was already resolved on another device. The latest version has been loaded.')
+    else {
+      setEditingOutreach(null)
+      setNotice(delivered ? 'Recorded as sent. Its content stays exactly as written.' : 'Returned to draft. Review it before sending again.')
+    }
+    await loadWorkspace()
+    setBusy(false)
   }
 
   async function retryOutreachSync() {
@@ -1776,7 +1854,8 @@ export function Workspace({ session }: WorkspaceProps) {
       {editingOutreach && <OutreachForm
         initial={editingOutreach === 'new' ? EMPTY_OUTREACH : outreachToDraft(editingOutreach)}
         sent={editingOutreach !== 'new' && editingOutreach.status === 'sent' ? editingOutreach : null}
-        title={editingOutreach === 'new' ? 'Write to a company' : editingOutreach.status === 'sent' ? 'Email as sent' : 'Outreach draft'}
+        inFlight={editingOutreach !== 'new' && editingOutreach.status === 'sending' ? editingOutreach : null}
+        title={editingOutreach === 'new' ? 'Write to a company' : editingOutreach.status === 'sent' ? 'Email as sent' : editingOutreach.status === 'sending' ? 'Send outcome unknown' : 'Outreach draft'}
         busy={busy}
         error={error}
         cvs={cvs}
@@ -1788,6 +1867,7 @@ export function Workspace({ session }: WorkspaceProps) {
         onSend={sendOutreach}
         onUpdateOutcome={updateOutreachOutcome}
         onRetrySync={retryOutreachSync}
+        onResolveAttempt={resolveOutreachAttempt}
       />}
       {editingBlock && <CVBlockForm initial={editingBlock === 'new' ? EMPTY_CV_BLOCK : blockToDraft(editingBlock)} title={editingBlock === 'new' ? 'Add a CV block' : 'Update CV block'} busy={busy} error={error} onCancel={() => { setError(''); setEditingBlock(null) }} onSave={saveCVBlock} />}
       {buildingCV && <CVBuilder jobs={jobs} blocks={cvBlocks} stories={starStories} busy={busy} error={error} notice={notice} onClose={() => { setError(''); setBuildingCV(false) }} onSave={saveBuiltCV} />}
