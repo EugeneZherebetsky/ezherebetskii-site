@@ -3,6 +3,10 @@ import type { JobDraft } from '../types'
 export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/gmail.send',
+  // Headers and labels only. This scope cannot read message bodies, which is
+  // enough to see that a thread was answered and by whom, and to find a
+  // message whose send response was lost.
+  'https://www.googleapis.com/auth/gmail.metadata',
 ] as const
 
 const GOOGLE_CLIENT_ID_PATTERN = /^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/
@@ -243,4 +247,69 @@ export async function sendGmailMessage(accessToken: string, raw: string) {
   })
   if (!response.ok) throw await googleApiError(response, 'Gmail')
   return await response.json() as { id: string; threadId?: string }
+}
+
+export type GmailHeader = { name?: string; value?: string }
+
+export type GmailMessageMetadata = {
+  id: string
+  threadId?: string
+  internalDate?: string
+  labelIds?: string[]
+  payload?: { headers?: GmailHeader[] }
+}
+
+/** The signed-in mailbox address, needed to tell a reply from our own message. */
+export async function fetchGmailAddress(accessToken: string) {
+  const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) throw await googleApiError(response, 'Gmail')
+  const profile = await response.json() as { emailAddress?: string }
+  return profile.emailAddress ?? ''
+}
+
+/**
+ * Every message on one thread, headers only. `format=metadata` is the most
+ * this app is permitted to read: subjects, addresses and dates, never bodies.
+ */
+export async function fetchGmailThread(accessToken: string, threadId: string) {
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`)
+  url.searchParams.set('format', 'metadata')
+  for (const header of ['From', 'To', 'Subject', 'Date', 'Message-ID']) {
+    url.searchParams.append('metadataHeaders', header)
+  }
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  if (response.status === 404) return null
+  if (!response.ok) throw await googleApiError(response, 'Gmail')
+  const thread = await response.json() as { id: string; messages?: GmailMessageMetadata[] }
+  return thread
+}
+
+/**
+ * Recent messages in the Sent label, newest first. Used to find a message
+ * whose send response was lost. `labelIds` is used rather than a search query
+ * because the metadata scope does not permit queries.
+ */
+export async function fetchRecentSentMessages(accessToken: string, maxResults = 25) {
+  const url = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages')
+  url.searchParams.set('labelIds', 'SENT')
+  url.searchParams.set('maxResults', String(maxResults))
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  if (!response.ok) throw await googleApiError(response, 'Gmail')
+  const listing = await response.json() as { messages?: Array<{ id: string; threadId?: string }> }
+  const ids = (listing.messages ?? []).map((message) => message.id)
+
+  const details: GmailMessageMetadata[] = []
+  for (const id of ids) {
+    const messageUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}`)
+    messageUrl.searchParams.set('format', 'metadata')
+    for (const header of ['To', 'Subject', 'Date', 'Message-ID']) {
+      messageUrl.searchParams.append('metadataHeaders', header)
+    }
+    const messageResponse = await fetch(messageUrl, { headers: { Authorization: `Bearer ${accessToken}` } })
+    if (!messageResponse.ok) throw await googleApiError(messageResponse, 'Gmail')
+    details.push(await messageResponse.json() as GmailMessageMetadata)
+  }
+  return details
 }

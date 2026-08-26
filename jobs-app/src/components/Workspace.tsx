@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
-import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, hasGoogleAccess, isGoogleRefusal, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
+import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, fetchGmailAddress, fetchGmailThread, fetchRecentSentMessages, hasGoogleAccess, isGoogleRefusal, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
+import { findThreadReplies, matchLostSend, type DetectedReply } from '../lib/gmailReplies'
 import {
   ACTIVE_STATUSES,
   BOARD_COLUMNS,
@@ -56,6 +57,7 @@ import {
   type InterviewPrepSaveResult,
   type Job,
   type JobDraft,
+  type EmailReply,
   type JobStageEvent,
   type JobStatus,
   type OutreachDraft,
@@ -241,6 +243,19 @@ function readPendingSend(userId: string): ApplicationSend | null {
   }
 }
 
+/**
+ * Reading reply headers needs the Gmail metadata scope, which connections made
+ * before this feature never granted, so a refusal usually means the permission
+ * is missing rather than that something is broken.
+ */
+function gmailReadError(caught: unknown) {
+  const message = caught instanceof Error ? caught.message : 'Gmail could not be reached.'
+  if (isGoogleRefusal(caught) && (caught.status === 403 || caught.status === 401)) {
+    return `${message} Checking replies needs one extra Gmail permission that reads message headers only. Open Settings, select Connect Google, approve it, then try again.`
+  }
+  return message
+}
+
 export function Workspace({ session }: WorkspaceProps) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [cvs, setCVs] = useState<CV[]>([])
@@ -254,6 +269,8 @@ export function Workspace({ session }: WorkspaceProps) {
   const [outreachEmails, setOutreachEmails] = useState<OutreachEmail[]>([])
   const [editingOutreach, setEditingOutreach] = useState<OutreachEmail | 'new' | null>(null)
   const [pendingOutreach, setPendingOutreach] = useState<PendingOutreachRecord | null>(() => readPendingOutreach(session.user.id))
+  const [emailReplies, setEmailReplies] = useState<EmailReply[]>([])
+  const gmailAddressRef = useRef<{ token: string; address: string } | null>(null)
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [settingsPersisted, setSettingsPersisted] = useState(false)
   const [view, setView] = useState<AppView>('dashboard')
@@ -296,7 +313,7 @@ export function Workspace({ session }: WorkspaceProps) {
   }
 
   const loadWorkspace = useCallback(async () => {
-    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, storiesResult, prepsResult, stageEventsResult, blocksResult, outreachResult] = await Promise.all([
+    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, storiesResult, prepsResult, stageEventsResult, blocksResult, outreachResult, repliesResult] = await Promise.all([
       supabase.from('jobs').select('*').order('updated_at', { ascending: false }),
       supabase.from('cvs').select('*').order('updated_at', { ascending: false }),
       supabase.from('user_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
@@ -310,6 +327,7 @@ export function Workspace({ session }: WorkspaceProps) {
       fetchAllStageEvents(),
       supabase.from('cv_blocks').select('*').order('block_type', { ascending: true }).order('sort_order', { ascending: true }),
       supabase.from('outreach_emails').select('*').order('updated_at', { ascending: false }).limit(1000),
+      supabase.from('email_replies').select('*').order('received_at', { ascending: false }).limit(1000),
     ])
 
     if (jobsResult.error) setError(jobsResult.error.message)
@@ -344,6 +362,9 @@ export function Workspace({ session }: WorkspaceProps) {
 
     if (outreachResult.error) setError(outreachResult.error.message)
     else setOutreachEmails((outreachResult.data ?? []) as OutreachEmail[])
+
+    if (repliesResult.error) setError(repliesResult.error.message)
+    else setEmailReplies((repliesResult.data ?? []) as EmailReply[])
 
     if (settingsResult.error) {
       setError(settingsResult.error.message)
@@ -420,6 +441,7 @@ export function Workspace({ session }: WorkspaceProps) {
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cv_blocks', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'outreach_emails', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'outreach_emails', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'email_replies', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .subscribe()
     }
 
@@ -840,6 +862,190 @@ export function Workspace({ session }: WorkspaceProps) {
       if (!existing || existing.provider_message_id !== record.provider_message_id) {
         throw new Error('The outreach record could not be updated to match the sent message.')
       }
+    }
+  }
+
+  /**
+   * The signed-in mailbox address, cached against the access token that
+   * produced it. Reconnecting Google can authorize a different account, and a
+   * stale address would make that account's own outbound mail look like a
+   * reply from a stranger.
+   */
+  async function gmailAddress(token: string) {
+    if (gmailAddressRef.current?.token !== token) {
+      gmailAddressRef.current = { token, address: await fetchGmailAddress(token) }
+    }
+    return gmailAddressRef.current.address
+  }
+
+  /** Stores detected replies. Duplicates are ignored, so checking is repeatable. */
+  async function recordReplies(sourceType: 'job' | 'outreach', sourceId: string, replies: DetectedReply[]) {
+    if (!replies.length) return
+    const { error: insertError } = await supabase
+      .from('email_replies')
+      .upsert(
+        replies.map((reply) => ({ ...reply, user_id: session.user.id, source_type: sourceType, source_id: sourceId })),
+        { onConflict: 'user_id,provider_message_id', ignoreDuplicates: true },
+      )
+    if (insertError) throw insertError
+  }
+
+  /**
+   * Asks Gmail whether one thread has been answered. Deliberately per-thread
+   * and user-triggered rather than a background mailbox sweep.
+   */
+  async function checkOutreachReply(email: OutreachEmail) {
+    if (!email.provider_thread_id) {
+      setError('This message has no Gmail thread recorded, so its replies cannot be checked. It was probably recorded as sent by hand.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
+      setGoogleConnected(true)
+      const address = await gmailAddress(token)
+      const thread = await fetchGmailThread(token, email.provider_thread_id)
+      if (!thread) {
+        setNotice('That Gmail thread no longer exists in your mailbox.')
+      }
+      else {
+        const replies = findThreadReplies(thread.messages ?? [], address, email.sent_at ?? email.created_at)
+        if (!replies.length) {
+          setNotice(`No reply on that thread yet. Checked ${formatDateTime(new Date().toISOString())}.`)
+        }
+        else {
+          await recordReplies('outreach', email.id, replies)
+          const first = replies[0]
+          const found = `Reply found from ${first.from_address} on ${formatDateTime(first.received_at)}.`
+          if (email.reply_status === 'replied') {
+            setNotice(`${found} It was already marked as replied.`)
+          }
+          else {
+            const { data: updated, error: markError } = await supabase
+              .from('outreach_emails')
+              .update({ reply_status: 'replied', replied_at: first.received_at })
+              .eq('id', email.id)
+              .eq('version', email.version)
+              .select('*')
+              .maybeSingle()
+            if (markError) setError(`${found} Marking it as replied failed: ${markError.message}`)
+            else if (!updated) setError(`${found} It changed on another device, so it was not marked as replied. Reopen it and set the reply state yourself.`)
+            else {
+              // The open editor holds a snapshot, and this write moved the row
+              // on. Replacing it keeps the version current so the next save is
+              // not rejected as a conflict.
+              setEditingOutreach(updated as OutreachEmail)
+              setNotice(`${found} Marked as replied, so it stops appearing in follow-ups.`)
+            }
+          }
+        }
+      }
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+      setError(gmailReadError(caught))
+      await loadWorkspace()
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Finds a message whose send response was lost by looking through recent
+   * sent mail, so an unknown outcome no longer has to be resolved by hand.
+   */
+  async function reconcileOutreachAttempt(email: OutreachEmail) {
+    if (!email.send_attempted_at) {
+      setError('This message has no recorded send attempt to reconcile.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
+      setGoogleConnected(true)
+      const recent = await fetchRecentSentMessages(token)
+      const match = matchLostSend(recent, {
+        recipient: email.recipient_email,
+        subject: email.subject,
+        attemptedAtIso: email.send_attempted_at,
+      })
+      if (!match) {
+        setNotice('No matching message in your recent Sent mail around the time of the attempt, so it probably never went. Return it to draft if you agree, or check Gmail yourself if the attempt was long ago.')
+      }
+      else {
+        const sentAtEpoch = Number(match.internalDate)
+        const matchedAt = Number.isFinite(sentAtEpoch) ? formatDateTime(new Date(sentAtEpoch).toISOString()) : 'an unknown time'
+        // Recording this is effectively permanent: the row freezes once sent.
+        if (!window.confirm(`Found a message to ${email.recipient_email} with this subject, sent at ${matchedAt}. Record this attempt as delivered? Its content can no longer be changed afterwards.`)) {
+          setBusy(false)
+          return
+        }
+        await recordOutreachSent({
+          outreach_id: email.id,
+          provider_message_id: match.id,
+          provider_thread_id: match.threadId ?? null,
+          attachment_filename: email.attachment_filename,
+          sent_at: Number.isFinite(sentAtEpoch) ? new Date(sentAtEpoch).toISOString() : email.send_attempted_at,
+        })
+        forgetPendingOutreach()
+        setEditingOutreach(null)
+        setNotice('Found in your Sent mail and recorded as sent, with its Gmail thread attached for reply checking.')
+      }
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+      setError(gmailReadError(caught))
+      await loadWorkspace()
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  /** Checks every Gmail thread this application was sent on. */
+  async function checkJobReplies(job: Job) {
+    const threads = applicationSends
+      .filter((send) => send.job_id === job.id && send.status === 'sent')
+      .map((send) => ({ send, threadId: typeof send.details?.thread_id === 'string' ? send.details.thread_id : '' }))
+      .filter((entry) => entry.threadId)
+    if (!threads.length) {
+      setError('No Gmail thread was recorded for this application, so replies cannot be checked.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
+      setGoogleConnected(true)
+      const address = await gmailAddress(token)
+      let found = 0
+      for (const { send, threadId } of threads) {
+        const thread = await fetchGmailThread(token, threadId)
+        if (!thread) continue
+        const replies = findThreadReplies(thread.messages ?? [], address, send.sent_at)
+        await recordReplies('job', job.id, replies)
+        found += replies.length
+      }
+      setNotice(found
+        ? `${found} repl${found === 1 ? 'y' : 'ies'} found. Review them and change the application stage yourself if it has moved on.`
+        : `No replies on ${threads.length === 1 ? 'that thread' : 'those threads'} yet.`)
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+      setError(gmailReadError(caught))
+      await loadWorkspace()
+    }
+    finally {
+      setBusy(false)
     }
   }
 
@@ -1847,7 +2053,7 @@ export function Workspace({ session }: WorkspaceProps) {
         </main>
       </div>
 
-      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onTailor={saveAndOpenTailoring} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} />}
+      {editing && <JobForm initial={editing === 'new' ? EMPTY_JOB : toDraft(editing)} title={editing === 'new' ? 'Add an opportunity' : 'Update application'} busy={busy} error={error} cvs={cvs} existing={editing !== 'new'} googleConfigured={Boolean(settings?.google_client_id)} sendHistoryPending={Boolean(pendingSendHistory)} sendHistory={editing === 'new' ? [] : applicationSends.filter((send) => send.job_id === editing.id)} onCancel={() => { setError(''); setEditing(null) }} onSave={saveJob} onTailor={saveAndOpenTailoring} onCalendar={addToGoogleCalendar} onSend={sendApplicationEmail} onRetrySendHistory={retrySendHistory} replies={editing === 'new' ? [] : emailReplies.filter((reply) => reply.source_type === 'job' && reply.source_id === editing.id)} onCheckReplies={() => checkJobReplies(editing as Job)} />}
       {editingContact && <ContactForm initial={editingContact === 'new' ? EMPTY_CONTACT : contactToDraft(editingContact)} title={editingContact === 'new' ? 'Add a contact' : 'Update contact'} busy={busy} error={error} jobs={jobs} existing={editingContact !== 'new'} interactions={editingContact === 'new' ? [] : contactHistory} onCancel={() => { setError(''); setEditingContact(null) }} onSave={saveContact} onLogInteraction={logInteraction} onDeleteInteraction={deleteInteraction} />}
       {editingStar && <StarStoryForm initial={editingStar === 'new' ? EMPTY_STAR_STORY : starStoryToDraft(editingStar)} title={editingStar === 'new' ? 'Add a STAR story' : 'Update STAR story'} busy={busy} error={error} onCancel={() => { setError(''); setEditingStar(null) }} onSave={saveStarStory} />}
       {viewingStar && !editingStar && <StarStoryView story={starStories.find((story) => story.id === viewingStar.id) ?? viewingStar} onClose={() => setViewingStar(null)} onEdit={(story) => { setViewingStar(null); setError(''); setEditingStar(story) }} />}
@@ -1868,6 +2074,9 @@ export function Workspace({ session }: WorkspaceProps) {
         onUpdateOutcome={updateOutreachOutcome}
         onRetrySync={retryOutreachSync}
         onResolveAttempt={resolveOutreachAttempt}
+        onReconcileAttempt={reconcileOutreachAttempt}
+        onCheckReply={checkOutreachReply}
+        replies={editingOutreach === 'new' ? [] : emailReplies.filter((reply) => reply.source_type === 'outreach' && reply.source_id === editingOutreach.id)}
       />}
       {editingBlock && <CVBlockForm initial={editingBlock === 'new' ? EMPTY_CV_BLOCK : blockToDraft(editingBlock)} title={editingBlock === 'new' ? 'Add a CV block' : 'Update CV block'} busy={busy} error={error} onCancel={() => { setError(''); setEditingBlock(null) }} onSave={saveCVBlock} />}
       {buildingCV && <CVBuilder jobs={jobs} blocks={cvBlocks} stories={starStories} busy={busy} error={error} notice={notice} onClose={() => { setError(''); setBuildingCV(false) }} onSave={saveBuiltCV} />}
