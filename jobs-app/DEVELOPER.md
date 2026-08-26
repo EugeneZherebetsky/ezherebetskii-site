@@ -78,6 +78,7 @@ The browser receives only the public Supabase project URL and publishable key. T
 | Networking and interview preparation | Merged in PR #13 | Contact tracker with its own pipeline, interaction history, reminders, STAR story library, and per-application interview preparation. |
 | Analytics and server reminders | Merged in PR #14 | Immutable stage-event history, honest counts-first analytics, and an opt-in scheduled email digest of due follow-ups. |
 | CV builder from reusable blocks | In progress | Reusable CV blocks, a STAR story reading view, and role-targeted CV assembly from material the user has already written. |
+| Speculative outreach tracking | In progress | Emails to leaders at companies of interest, sent through the existing Gmail connection and kept exactly as delivered. |
 
 PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 PR #13: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/13>
@@ -193,6 +194,17 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - Saving creates a new text CV in the library and never overwrites an existing one. When the target was an application, the CV can be linked to it with the same optimistic-lock handling used by AI tailoring.
 - Deleting a block does not alter CVs already built from it, because assembly copies text rather than referencing it.
 
+### Speculative outreach
+
+- `outreach_emails` records a message written directly to a leader at a company of interest, whether or not a role is advertised.
+- The row stores the **exact subject and body that were sent**, not a summary. A database trigger freezes the delivered content, recipient, company, attachment and message id once `status` is `sent`; only reply state, follow-up date and notes stay editable.
+- Sending reuses the existing Gmail path: `requestGoogleAccess`, `buildRawEmail`, `sendGmailMessage`, and `cvEmailAttachment` for the CV.
+- The row is always persisted as a draft **before** Gmail is called. If Gmail accepts the message but the record update fails, the row already exists, so the retry updates it rather than sending a second message. The pending message id is held in a per-user browser queue, and sending is blocked until it is resolved.
+- `recordOutreachSent` updates only rows still in `draft`, and treats an already-recorded row with the same message id as success, so a duplicate retry is harmless.
+- A message can be linked to a saved contact, which fills the recipient fields, and to the CV that was attached.
+- Follow-up dates appear in Reminders, in browser notifications, and in the scheduled email digest. A message marked as replied stops appearing.
+- The suggested starter message deliberately leaves bracketed gaps, and sending with an unfilled placeholder asks for confirmation. A speculative email that never says why this company reads as a circular.
+
 ### STAR story reading
 
 - Story cards show all four STAR parts at a glance, with parts that are not yet recorded marked as missing rather than hidden.
@@ -236,6 +248,8 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/components/StarStoryView.tsx` | Read-only STAR story view with missing-part warnings. |
 | `src/components/CVBuilder.tsx` | Role targeting, ranked blocks and stories, coverage, editable preview, and saving a built CV. |
 | `src/components/CVBlockForm.tsx` | Reusable CV block editor. |
+| `src/components/Outreach.tsx` | Speculative outreach list, summary counts, and reply filters. |
+| `src/components/OutreachForm.tsx` | Outreach composer, Gmail send, and the read-only record of a sent email. |
 | `src/lib/supabase.ts` | Browser Supabase client using public environment values. |
 | `src/lib/opportunities.ts` | Application conversions, filtering, dates, board columns, CSV, and JSON helpers. |
 | `src/lib/cvs.ts` | CV file validation, safe filenames, downloads, and attachment preparation. |
@@ -245,11 +259,12 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/lib/networking.ts` | Contact, interaction, story, and preparation conversions; contact filtering; interview-topic derivation and story ranking. |
 | `src/lib/analytics.ts` | Pure analytics functions: reached statuses, funnel, weekly buckets, median response time, grouped outcomes. |
 | `src/lib/cvBuilder.ts` | Role requirements, candidate ranking, story-to-bullet derivation, CV assembly, and coverage reporting. |
+| `src/lib/outreach.ts` | Outreach conversions, filtering, summary counts, follow-up scheduling, and the suggested message. |
 | `src/types.ts` | Shared application, CV, contact, interaction, STAR story, interview-preparation, stage-event, settings, send-history, status, and draft types. |
 | `src/lib/*.test.ts` | Vitest unit tests for the pure library logic. Run with `npm test`. |
 | `src/styles.css` | Desktop and mobile layout. |
 | `../supabase/functions/tailor-cv/index.ts` | Authenticated OpenAI server integration and generation accounting. |
-| `../supabase/functions/send-reminders/index.ts` | Cron-invoked reminder digests: secret check, per-user due items, Resend delivery, and dedup records. |
+| `../supabase/functions/send-reminders/index.ts` | Cron-invoked reminder digests covering application, networking, and outreach follow-ups. |
 | `../supabase/migrations/` | Replayable database history. Never replace migrations with untracked dashboard-only changes. |
 
 ## Database and storage map
@@ -265,6 +280,7 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `public.contact_interactions` | Logged conversations per contact with channel, time, and summary. |
 | `public.star_stories` | Reusable STAR interview examples with skills and notes; also the experience evidence offered to the CV builder. |
 | `public.cv_blocks` | Reusable typed CV content: summary, skills, experience, achievement, education, certification, other. |
+| `public.outreach_emails` | Speculative emails to company leaders, holding the exact delivered message, Gmail ids, reply state, and follow-up date. |
 | `public.interview_preps` | One preparation record per application: research notes, questions, checklist, and post-interview notes. |
 | `public.job_stage_events` | Immutable application-stage history; synthetic backfills are marked for exclusion from duration metrics. |
 | `public.reminder_deliveries` | Server-managed log deduplicating sent reminder emails per (user, item, due time); users can read their own rows. |
@@ -311,6 +327,7 @@ Supabase considers an update that changes zero rows successful, so checking only
 | `20260804170000_add_job_stage_events.sql` | Adds immutable stage-event history with a recording trigger and marked synthetic backfills. |
 | `20260804171000_add_server_reminders.sql` | Adds email-reminder settings, the delivery dedup log, and the hourly pg_cron invocation of `send-reminders`. |
 | `20260804180000_add_cv_blocks.sql` | Adds reusable CV blocks with RLS, ordering, deletion broadcast, and Realtime. |
+| `20260804190000_add_outreach_emails.sql` | Adds speculative outreach emails, freezes sent content, and lets outreach follow-ups enter the reminder digest. |
 
 For a schema change:
 
