@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { JOB_STATUSES, PRIORITIES, STATUS_LABELS, WORK_MODES, type ApplicationSend, type CV, type JobDraft, type JobPriority, type JobStatus, type WorkMode } from '../types'
+import { JOB_STATUSES, PRIORITIES, STATUS_LABELS, WORK_MODES, type ApplicationSend, type CV, type EmailReply, type JobDraft, type JobPriority, type JobStatus, type WorkMode } from '../types'
 
 type JobFormProps = {
   initial: JobDraft
@@ -17,6 +17,8 @@ type JobFormProps = {
   onCalendar: (draft: JobDraft) => Promise<void>
   onSend: (draft: JobDraft) => Promise<void>
   onRetrySendHistory: () => Promise<void>
+  replies: EmailReply[]
+  onCheckReplies: () => Promise<void>
 }
 
 function withEmailDefaults(initial: JobDraft): JobDraft {
@@ -33,7 +35,7 @@ function sentAtLabel(value: string) {
   return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
-export function JobForm({ initial, title, busy, error, cvs, existing, googleConfigured, sendHistoryPending, sendHistory, onCancel, onSave, onTailor, onCalendar, onSend, onRetrySendHistory }: JobFormProps) {
+export function JobForm({ initial, title, busy, error, cvs, existing, googleConfigured, sendHistoryPending, sendHistory, replies, onCancel, onSave, onTailor, onCalendar, onSend, onRetrySendHistory, onCheckReplies }: JobFormProps) {
   const [draft, setDraft] = useState<JobDraft>(() => withEmailDefaults(initial))
 
   function field<K extends keyof JobDraft>(key: K, value: JobDraft[K]) {
@@ -92,7 +94,22 @@ export function JobForm({ initial, title, busy, error, cvs, existing, googleConf
             {sendHistoryPending && <small>The previous email was already sent. Synchronize its history before sending another message; retrying does not resend it.</small>}
           </section>
 
-          {sendHistory.length > 0 && <section className="send-history full"><strong>Send history</strong>{sendHistory.map((send) => <div key={send.id} className={send.status === 'sent' ? 'sent' : 'failed'}><span>{send.status === 'sent' ? 'Sent' : 'Failed'} {sentAtLabel(send.sent_at)}</span><small>{send.recipient} · {send.subject}</small></div>)}</section>}
+          {sendHistory.length > 0 && (
+            <section className="send-history full">
+              <div className="send-history-head">
+                <strong>Send history</strong>
+                <button className="button secondary" type="button" disabled={busy || !googleConfigured} onClick={() => void onCheckReplies()}>Check Gmail for replies</button>
+              </div>
+              {sendHistory.map((send) => <div key={send.id} className={send.status === 'sent' ? 'sent' : 'failed'}><span>{send.status === 'sent' ? 'Sent' : 'Failed'} {sentAtLabel(send.sent_at)}</span><small>{send.recipient} · {send.subject}</small></div>)}
+              {replies.length > 0 && (
+                <div className="send-history-replies">
+                  <strong>Replies received</strong>
+                  {replies.map((reply) => <div key={reply.id} className="sent"><span>{reply.from_address ?? 'Unknown sender'} · {sentAtLabel(reply.received_at)}</span><small>{reply.subject || 'No subject'}</small></div>)}
+                  <small>Opportunity Desk does not change the stage for you. Move this application on yourself if the conversation has progressed.</small>
+                </div>
+              )}
+            </section>
+          )}
 
           {error && <p className="form-message error-text full" role="alert">{error}</p>}
           <div className="form-actions full">

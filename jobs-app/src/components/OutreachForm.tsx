@@ -7,6 +7,7 @@ import {
   type CV,
   type Contact,
   type OutreachDraft,
+  type EmailReply,
   type OutreachEmail,
   type ReplyStatus,
 } from '../types'
@@ -37,11 +38,16 @@ type OutreachFormProps = {
   onRetrySync: () => Promise<void>
   /** Resolves a message whose Gmail response was lost. */
   onResolveAttempt: (email: OutreachEmail, delivered: boolean) => Promise<void>
+  /** Looks for the lost message in recent Sent mail. */
+  onReconcileAttempt: (email: OutreachEmail) => Promise<void>
+  /** Asks Gmail whether this thread has been answered. */
+  onCheckReply: (email: OutreachEmail) => Promise<void>
+  replies: EmailReply[]
 }
 
 export function OutreachForm({
-  initial, sent, inFlight, title, busy, error, cvs, contacts, googleConfigured, syncPending,
-  onCancel, onSaveDraft, onSend, onUpdateOutcome, onRetrySync, onResolveAttempt,
+  initial, sent, inFlight, title, busy, error, cvs, contacts, googleConfigured, syncPending, replies,
+  onCancel, onSaveDraft, onSend, onUpdateOutcome, onRetrySync, onResolveAttempt, onReconcileAttempt, onCheckReply,
 }: OutreachFormProps) {
   const [draft, setDraft] = useState<OutreachDraft>(initial)
   const [replyStatus, setReplyStatus] = useState<ReplyStatus>(sent?.reply_status ?? 'awaiting')
@@ -119,9 +125,10 @@ export function OutreachForm({
             <div className="outreach-unknown-banner full" role="alert">
               <strong>Outcome unknown — do not send again yet</strong>
               <span>
-                Gmail was asked to send this message {inFlight.send_attempted_at ? `at ${formatDateTime(inFlight.send_attempted_at)}` : ''}, but the reply never arrived, so it may or may not have been delivered. Its text is locked until you say which. Opportunity Desk can only send email, not read your mailbox, so please check your Gmail Sent folder for “{inFlight.subject}”.
+                Gmail was asked to send this message {inFlight.send_attempted_at ? `at ${formatDateTime(inFlight.send_attempted_at)}` : ''}, but the reply never arrived, so it may or may not have been delivered. Its text is locked until the outcome is known. Let Opportunity Desk look through your recent Sent mail for “{inFlight.subject}”, or check yourself and record which happened.
               </span>
               <div className="button-row">
+                <button className="button primary" type="button" disabled={busy || !googleConfigured} onClick={() => void onReconcileAttempt(inFlight)}>Check Gmail for me</button>
                 <button className="button secondary" type="button" disabled={busy} onClick={() => void onResolveAttempt(inFlight, true)}>It is in Sent — record as sent</button>
                 <button className="button secondary" type="button" disabled={busy} onClick={() => void onResolveAttempt(inFlight, false)}>Not in Sent — return to draft</button>
               </div>
@@ -170,6 +177,20 @@ export function OutreachForm({
               </label>
               <label>Follow up on<input type="datetime-local" value={draft.follow_up_at} onChange={(event) => field('follow_up_at', event.target.value)} /><small>Appears in Reminders and in the daily email digest.</small></label>
               <label className="full">Notes<textarea rows={3} value={draft.notes} placeholder="What they said, who they referred you to, when to try again." onChange={(event) => field('notes', event.target.value)} /></label>
+              <section className="outreach-replies full">
+                <div className="outreach-replies-head">
+                  <strong>Replies on this thread</strong>
+                  <button className="button secondary" type="button" disabled={busy || !googleConfigured || !sent.provider_thread_id} onClick={() => void onCheckReply(sent)}>Check Gmail for a reply</button>
+                </div>
+                {replies.length === 0
+                  ? <p className="compact-empty">{sent.provider_thread_id ? 'None recorded yet. Checking reads only the sender, subject and date, never the message itself.' : 'No Gmail thread was recorded for this message, so replies cannot be checked automatically.'}</p>
+                  : <ul className="interaction-list">{replies.map((reply) => (
+                      <li key={reply.id}>
+                        <span><strong>{reply.from_address ?? 'Unknown sender'}</strong> · {formatDateTime(reply.received_at)}</span>
+                        <p>{reply.subject || 'No subject'}</p>
+                      </li>
+                    ))}</ul>}
+              </section>
             </>
           ) : (
             <>

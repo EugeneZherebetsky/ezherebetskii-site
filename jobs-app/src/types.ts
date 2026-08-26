@@ -510,3 +510,21 @@ export const EMPTY_OUTREACH: OutreachDraft = {
   follow_up_at: '',
   notes: '',
 }
+
+/**
+ * A reply detected on a Gmail thread. Header facts only: this app never
+ * requests or stores message bodies.
+ */
+export type EmailReply = {
+  id: string
+  user_id: string
+  source_type: 'job' | 'outreach'
+  source_id: string
+  thread_id: string
+  provider_message_id: string
+  from_address: string | null
+  subject: string | null
+  received_at: string
+  detected_at: string
+  data: Record<string, unknown>
+}

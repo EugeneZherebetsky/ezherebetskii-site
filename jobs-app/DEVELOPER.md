@@ -79,6 +79,7 @@ The browser receives only the public Supabase project URL and publishable key. T
 | Analytics and server reminders | Merged in PR #14 | Immutable stage-event history, honest counts-first analytics, and an opt-in scheduled email digest of due follow-ups. |
 | CV builder from reusable blocks | In progress | Reusable CV blocks, a STAR story reading view, and role-targeted CV assembly from material the user has already written. |
 | Speculative outreach tracking | In progress | Emails to leaders at companies of interest, sent through the existing Gmail connection and kept exactly as delivered. |
+| Gmail reply tracking | In progress | Per-thread reply detection for applications and outreach, and automatic reconciliation of a send whose response was lost. |
 
 PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 PR #13: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/13>
@@ -194,6 +195,18 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - Saving creates a new text CV in the library and never overwrites an existing one. When the target was an application, the CV can be linked to it with the same optimistic-lock handling used by AI tailoring.
 - Deleting a block does not alter CVs already built from it, because assembly copies text rather than referencing it.
 
+### Gmail reply tracking
+
+- Adds the `gmail.metadata` scope, which exposes headers and labels only. Message bodies are never requested and never stored; a detected reply records the sender, subject, date, and Gmail ids.
+- Checking is per thread and user-triggered. There is no background sweep of the mailbox.
+- Outreach: a sent message with a Gmail thread offers "Check Gmail for a reply". A reply from anyone other than the signed-in address, at or after the send, marks the message replied and stops its follow-ups.
+- Applications: the send history offers the same check across every thread the application was sent on. Replies are shown but the stage is never changed automatically, only suggested.
+- `email_replies` holds detected replies for both. It exists because `application_sends` is deliberately insert-only; recording a reply must not require making immutable send history mutable.
+- A unique index on (user, Gmail message id) makes repeated checks idempotent.
+- An unknown send outcome can now be reconciled automatically: recent Sent mail is listed by label, and a message matching recipient, exact subject, and a time at or after the attempt is recorded as sent, with its thread attached so replies can then be tracked. Matching by label rather than by search query is deliberate, because the metadata scope does not permit queries. Manual resolution remains available.
+- Reconciliation cannot recover the attachment filename, since that is only known while the file is in hand; `cv_id` still records which CV was linked.
+- A 403 or 401 from a read call is reported as a missing permission with instructions to reconnect, because connections made before this phase were never granted the scope.
+
 ### Speculative outreach
 
 - `outreach_emails` records a message written directly to a leader at a company of interest, whether or not a role is advertised.
@@ -265,6 +278,7 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/lib/analytics.ts` | Pure analytics functions: reached statuses, funnel, weekly buckets, median response time, grouped outcomes. |
 | `src/lib/cvBuilder.ts` | Role requirements, candidate ranking, story-to-bullet derivation, CV assembly, and coverage reporting. |
 | `src/lib/outreach.ts` | Outreach conversions, filtering, summary counts, follow-up scheduling, and the suggested message. |
+| `src/lib/gmailReplies.ts` | Header parsing, thread reply detection, and matching a send whose response was lost. |
 | `src/types.ts` | Shared application, CV, contact, interaction, STAR story, interview-preparation, stage-event, settings, send-history, status, and draft types. |
 | `src/lib/*.test.ts` | Vitest unit tests for the pure library logic. Run with `npm test`. |
 | `src/styles.css` | Desktop and mobile layout. |
@@ -286,6 +300,7 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `public.star_stories` | Reusable STAR interview examples with skills and notes; also the experience evidence offered to the CV builder. |
 | `public.cv_blocks` | Reusable typed CV content: summary, skills, experience, achievement, education, certification, other. |
 | `public.outreach_emails` | Speculative emails to company leaders, holding the exact delivered message, Gmail ids, reply state, and follow-up date. |
+| `public.email_replies` | Derived cache of replies detected on Gmail threads: sender, subject, date and ids, never bodies. |
 | `public.interview_preps` | One preparation record per application: research notes, questions, checklist, and post-interview notes. |
 | `public.job_stage_events` | Immutable application-stage history; synthetic backfills are marked for exclusion from duration metrics. |
 | `public.reminder_deliveries` | Server-managed log deduplicating sent reminder emails per (user, item, due time); users can read their own rows. |
@@ -335,6 +350,7 @@ Supabase considers an update that changes zero rows successful, so checking only
 | `20260804190000_add_outreach_emails.sql` | Adds speculative outreach emails, freezes sent content, and lets outreach follow-ups enter the reminder digest. |
 | `20260804200000_harden_outreach_send.sql` | Adds the in-flight `sending` state and allows a deleted CV to null its outreach reference. |
 | `20260804201000_allow_outreach_attempt_reset.sql` | Lets the send attempt identifier be cleared when an unsent message returns to draft. |
+| `20260804210000_add_email_replies.sql` | Adds the detected-reply cache for applications and outreach, with per-message deduplication. |
 
 For a schema change:
 
@@ -410,6 +426,9 @@ The `tailor-cv` function performs its own Supabase user verification. Its gatewa
 - The Google OAuth client ID is public and is saved in `user_settings`.
 - Google access tokens are private, short-lived, and browser-memory only.
 - Never persist a Google access token in Supabase, local storage, logs, or a backup.
+- Scopes are `calendar.events`, `gmail.send`, and `gmail.metadata`. The metadata scope reads headers and labels only and cannot return message bodies, which is the least privilege that supports reply detection.
+- `gmail.metadata` is a restricted scope, like `gmail.send` already is. Add it to the OAuth consent screen; while the app stays in testing with the owner as a test user, no Google verification is required.
+- Adding a scope invalidates existing consent. Reconnect Google in Settings once, or reply checks will return 403.
 
 ## Safe implementation workflow
 
@@ -489,6 +508,7 @@ Still open:
 - Enable Supabase leaked-password protection in the Auth security settings. This is an existing security-advisor warning, not a code migration.
 - Run the Supabase security and performance advisors now that the networking, stage-event, and reminder tables exist.
 - Verify the first reminder digest end to end once the secrets are set: check the cron run, the function response, the received email, and the `reminder_deliveries` rows.
+- Add the `gmail.metadata` scope to the Google OAuth consent screen, then reconnect Google in Settings once so the existing grant is replaced.
 - Confirm the Cloudflare production deployment after each merge.
 
 ## Recommended next improvements
