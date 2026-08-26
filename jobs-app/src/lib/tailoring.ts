@@ -24,7 +24,7 @@ export type TailoringResult = {
   generation_id: string
 }
 
-function tokens(value: string) {
+export function tokens(value: string) {
   return (value.toLowerCase().match(/(?:\.[\p{L}][\p{L}\p{N}+#./-]*|[\p{L}\p{N}][\p{L}\p{N}+#./-]*)/gu) ?? [])
     .map((word) => word
       .replace(/^[^\p{L}\p{N}.+#]+/gu, '')

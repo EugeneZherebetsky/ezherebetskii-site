@@ -102,6 +102,40 @@ export function requestGoogleAccess(userId: string, clientId: string) {
   })
 }
 
+/**
+ * An error built from an actual HTTP response, which proves the request
+ * reached Google and was refused. A transport failure produces an ordinary
+ * error instead, and cannot prove whether the request was carried out.
+ */
+export class GoogleResponseError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'GoogleResponseError'
+    this.status = status
+  }
+}
+
+/** True when Google answered at all, whatever the status. */
+export function isGoogleRefusal(error: unknown): error is GoogleResponseError {
+  return error instanceof GoogleResponseError
+}
+
+/**
+ * True only when Google rejected the request outright, so it certainly did not
+ * take effect.
+ *
+ * A 5xx is not such a case: Gmail can fail on its own side after accepting a
+ * message, so treating one as a refusal would invite a duplicate send. A 408
+ * is excluded for the same reason. Everything else in the 4xx range is a
+ * terminal client error, where nothing was delivered.
+ */
+export function isTerminalClientError(error: unknown): error is GoogleResponseError {
+  if (!(error instanceof GoogleResponseError)) return false
+  return error.status >= 400 && error.status < 500 && error.status !== 408
+}
+
 async function googleApiError(response: Response, service: string) {
   let detail = ''
   try {
@@ -112,7 +146,7 @@ async function googleApiError(response: Response, service: string) {
     detail = ''
   }
   if (response.status === 401) clearGoogleAccess()
-  return new Error(`${service} returned HTTP ${response.status}${detail ? `: ${detail}` : '.'}`)
+  return new GoogleResponseError(`${service} returned HTTP ${response.status}${detail ? `: ${detail}` : '.'}`, response.status)
 }
 
 export async function createCalendarEvent(accessToken: string, draft: JobDraft, timezone: string) {

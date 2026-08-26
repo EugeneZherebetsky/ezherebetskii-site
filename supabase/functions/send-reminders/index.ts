@@ -18,7 +18,7 @@ type ReminderSettings = {
 }
 
 type DueItem = {
-  item_type: 'job' | 'contact'
+  item_type: 'job' | 'contact' | 'outreach'
   item_id: string
   next_action_at: string
   title: string
@@ -111,7 +111,7 @@ Deno.serve(async (req) => {
     const leadHours = Math.min(Math.max(settings.reminder_lead_hours ?? 24, 0), 720)
     const horizon = new Date(now.getTime() + leadHours * 3_600_000).toISOString()
 
-    const [jobsResult, contactsResult] = await Promise.all([
+    const [jobsResult, contactsResult, outreachResult] = await Promise.all([
       admin
         .from('jobs')
         .select('id, role_title, company, next_action, next_action_at, status')
@@ -128,9 +128,18 @@ Deno.serve(async (req) => {
         .not('next_action_at', 'is', null)
         .gte('next_action_at', overdueFloor)
         .lte('next_action_at', horizon),
+      admin
+        .from('outreach_emails')
+        .select('id, company, recipient_name, subject, follow_up_at, status, reply_status')
+        .eq('user_id', userId)
+        .eq('status', 'sent')
+        .neq('reply_status', 'replied')
+        .not('follow_up_at', 'is', null)
+        .gte('follow_up_at', overdueFloor)
+        .lte('follow_up_at', horizon),
     ])
-    if (jobsResult.error || contactsResult.error) {
-      summary.push({ user: userId, error: (jobsResult.error ?? contactsResult.error)?.message })
+    if (jobsResult.error || contactsResult.error || outreachResult.error) {
+      summary.push({ user: userId, error: (jobsResult.error ?? contactsResult.error ?? outreachResult.error)?.message })
       continue
     }
 
@@ -148,6 +157,13 @@ Deno.serve(async (req) => {
         next_action_at: contact.next_action_at as string,
         title: (contact.next_action as string | null) || 'Networking follow-up',
         subtitle: `${contact.name}${contact.company ? ` · ${contact.company}` : ''}`,
+      })),
+      ...(outreachResult.data ?? []).map((email) => ({
+        item_type: 'outreach' as const,
+        item_id: email.id as string,
+        next_action_at: email.follow_up_at as string,
+        title: `Follow up on "${email.subject}"`,
+        subtitle: `${email.company}${email.recipient_name ? ` · ${email.recipient_name}` : ''}`,
       })),
     ]
     if (!candidates.length) continue

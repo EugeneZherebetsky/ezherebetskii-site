@@ -11,6 +11,13 @@ import {
   type StarStory,
 } from '../types'
 
+const STORY_PARTS: Array<{ key: 'situation' | 'task' | 'action' | 'result'; label: string }> = [
+  { key: 'situation', label: 'S' },
+  { key: 'task', label: 'T' },
+  { key: 'action', label: 'A' },
+  { key: 'result', label: 'R' },
+]
+
 type InterviewPrepViewProps = {
   jobs: Job[]
   preps: InterviewPrep[]
@@ -18,11 +25,12 @@ type InterviewPrepViewProps = {
   busy: boolean
   onSavePrep: (job: Job, existing: InterviewPrep | null, draft: InterviewPrepDraft) => Promise<InterviewPrepSaveResult>
   onAddStory: () => void
+  onViewStory: (story: StarStory) => void
   onEditStory: (story: StarStory) => void
   onDeleteStory: (story: StarStory) => Promise<void>
 }
 
-export function InterviewPrepView({ jobs, preps, stories, busy, onSavePrep, onAddStory, onEditStory, onDeleteStory }: InterviewPrepViewProps) {
+export function InterviewPrepView({ jobs, preps, stories, busy, onSavePrep, onAddStory, onViewStory, onEditStory, onDeleteStory }: InterviewPrepViewProps) {
   const upcoming = useMemo(() => jobs
     .filter((job) => INTERVIEW_STAGE_STATUSES.includes(job.status))
     .sort((left, right) => {
@@ -64,6 +72,7 @@ export function InterviewPrepView({ jobs, preps, stories, busy, onSavePrep, onAd
             prep={selectedPrep}
             stories={stories}
             busy={busy}
+            onViewStory={onViewStory}
             onSave={(existing, draft) => onSavePrep(selectedJob, existing, draft)}
           />
         )}
@@ -83,11 +92,27 @@ export function InterviewPrepView({ jobs, preps, stories, busy, onSavePrep, onAd
         ) : (
           <div className="cv-grid">
             {stories.map((story) => (
-              <article className="cv-card" key={story.id}>
-                <div className="cv-card-head"><span className="cv-file-mark" aria-hidden="true">★</span><div><h3>{story.title}</h3><p>{story.skills || 'No skills tagged yet'}</p></div></div>
-                {story.situation && <p className="cv-preview">{story.situation.slice(0, 140)}{story.situation.length > 140 ? '…' : ''}</p>}
-                {story.result && <p className="cv-notes">Result: {story.result.slice(0, 120)}{story.result.length > 120 ? '…' : ''}</p>}
+              <article className="cv-card story-card" key={story.id}>
+                <div className="cv-card-head">
+                  <span className="cv-file-mark" aria-hidden="true">★</span>
+                  <div>
+                    <h3><button className="story-open" type="button" onClick={() => onViewStory(story)}>{story.title}</button></h3>
+                    <p>{story.skills || 'No skills tagged yet'}</p>
+                  </div>
+                </div>
+                <dl className="story-glance">
+                  {STORY_PARTS.map(({ key, label }) => {
+                    const value = story[key]?.trim()
+                    return (
+                      <div key={key} className={value ? undefined : 'empty'}>
+                        <dt>{label}</dt>
+                        <dd>{value ? `${value.slice(0, 110)}${value.length > 110 ? '…' : ''}` : 'Not recorded'}</dd>
+                      </div>
+                    )
+                  })}
+                </dl>
                 <div className="cv-actions">
+                  <button className="button secondary" onClick={() => onViewStory(story)}>View</button>
                   <button className="button secondary" disabled={busy} onClick={() => onEditStory(story)}>Edit</button>
                   <button className="button danger" disabled={busy} onClick={() => void onDeleteStory(story)}>Delete</button>
                 </div>
@@ -100,7 +125,7 @@ export function InterviewPrepView({ jobs, preps, stories, busy, onSavePrep, onAd
   )
 }
 
-function PrepPanel({ job, prep, stories, busy, onSave }: { job: Job; prep: InterviewPrep | null; stories: StarStory[]; busy: boolean; onSave: (existing: InterviewPrep | null, draft: InterviewPrepDraft) => Promise<InterviewPrepSaveResult> }) {
+function PrepPanel({ job, prep, stories, busy, onViewStory, onSave }: { job: Job; prep: InterviewPrep | null; stories: StarStory[]; busy: boolean; onViewStory: (story: StarStory) => void; onSave: (existing: InterviewPrep | null, draft: InterviewPrepDraft) => Promise<InterviewPrepSaveResult> }) {
   const [draft, setDraft] = useState<InterviewPrepDraft>(() => prepToDraft(prep))
   // The optimistic-lock baseline stays bound to the record this draft was loaded
   // from, not the live prop, so a Realtime refresh cannot silently raise the
@@ -137,7 +162,7 @@ function PrepPanel({ job, prep, stories, busy, onSave }: { job: Job; prep: Inter
         <strong>Most relevant STAR stories</strong>
         {rankedStories.length ? (
           <ul className="ranked-stories">
-            {rankedStories.map(({ story, score }) => <li key={story.id}><span>{story.title}</span><em>{score}% keyword match</em></li>)}
+            {rankedStories.map(({ story, score }) => <li key={story.id}><button className="story-open" type="button" onClick={() => onViewStory(story)}>{story.title}</button><em>{score}% keyword match</em></li>)}
           </ul>
         ) : <p className="compact-empty">{stories.length ? 'No story matches this job description yet.' : 'Add STAR stories below to see which fit this interview.'}</p>}
       </div>

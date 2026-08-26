@@ -22,11 +22,12 @@ Supabase remains the only source of truth. You sign in on a device; you never en
 | Dashboard | Pipeline metrics and the next actions that need attention. |
 | Board | Kanban columns covering every status, with drag-and-drop CV assignment. |
 | Applications | Searchable, filterable table of every opportunity with inline actions. |
-| Reminders | Application and networking follow-ups due soon, newest first. |
+| Reminders | Application, networking, and outreach follow-ups due soon, newest first. |
 | Network | Contacts, their own outreach pipeline, and logged interactions. |
+| Outreach | Speculative emails to company leaders, kept exactly as sent. |
 | Interviews | Upcoming interviews, per-application preparation, and the STAR story library. |
 | Analytics | Weekly effort, conversion funnel, response times, and what is actually working. |
-| CV library | Private CV files and text versions with tailoring metadata. |
+| CV library | Private CV files and text versions, reusable content blocks, and the CV builder. |
 | Find jobs | Live Remotive and Arbeitnow vacancy search with one-click saving. |
 | Backup | JSON backup/restore and CSV export of applications. |
 | Settings | Preferences, timezone, reminders, and the public Google client ID. |
@@ -52,6 +53,15 @@ Every view is reachable on mobile through the horizontal navigation strip.
 - Free local keyword matching ranks your CV versions against a job description.
 - Optional AI drafting produces a tailored summary, highlights, and cover letter through a protected Edge Function; every saved version keeps the complete source CV and stays editable.
 
+### Building a CV for a specific role
+
+- Save the parts of your CV once as reusable blocks: profile summary, skills, roles, achievements, education, certifications.
+- Point the builder at an application with a job description, or paste the requirements.
+- Your blocks and STAR stories are ranked by how many of the role's requirements they actually contain, and the matching words are shown so you can see why.
+- A coverage panel marks which requirements your selection evidences and which it does not — a prompt to add something you genuinely have, not a score.
+- The assembled CV appears as editable text; edit it freely, then save it as a new version in the library and optionally link it to the application.
+- Nothing is invented. Every line comes from a block or a STAR story you wrote, and a story is compressed into a bullet using only its own sentences.
+
 ### Job search
 
 - Live Remotive and Arbeitnow feeds, no API keys required.
@@ -64,6 +74,14 @@ Every view is reachable on mobile through the horizontal navigation strip.
 - Gmail sending with the linked private CV attached and immutable send history.
 - Google access tokens stay in browser memory and never reach the database.
 
+### Speculative outreach
+
+- Write directly to a leader at a company you want to work for, whether or not anything is advertised.
+- Send through the Gmail connection you already use for applications, with a CV attached. If a send is interrupted, the message is held with an unknown outcome and asks you to check your Sent folder rather than risking a duplicate.
+- The exact subject and message you sent are stored and locked, so a follow-up months later starts from what you actually wrote rather than from memory.
+- Record whether they replied, keep private notes, and schedule the follow-up, which then appears in Reminders and in the daily digest.
+- Filter by awaiting reply, replied, or no reply, and see how many companies you have approached.
+
 ### Networking
 
 - Contacts with relationship type, company, role, and contact details.
@@ -73,7 +91,7 @@ Every view is reachable on mobile through the horizontal navigation strip.
 
 ### Interview preparation
 
-- A reusable STAR story library of verified examples.
+- A reusable STAR story library of verified examples, with a reading view that shows a whole story at a glance and flags any part you have not written yet.
 - Applications at interview stages become upcoming interviews automatically.
 - Likely topics derived locally from the job description, and your most relevant STAR stories ranked against it.
 - Per-application research notes, questions to ask, a preparation checklist, and post-interview notes.
@@ -87,7 +105,7 @@ Every view is reachable on mobile through the horizontal navigation strip.
 
 ### Reminders that reach you when the app is closed
 
-- Opt-in daily email digest of newly due application and networking follow-ups.
+- Opt-in daily email digest of newly due application, networking, and outreach follow-ups.
 - Delivered at an hour you choose, interpreted in your saved timezone.
 - A delivery log stops a due action being emailed again once its send is recorded. If that record fails to write after the email has gone out, you may receive a repeated digest — the design prefers a duplicate over a missed follow-up.
 

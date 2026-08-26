@@ -77,6 +77,8 @@ The browser receives only the public Supabase project URL and publishable key. T
 | AI CV tailoring | Merged in PR #10 | Local matching, protected AI drafting, usage limits, complete source-CV preservation, and form-validation safeguards. Add the server secret before production acceptance testing. |
 | Networking and interview preparation | Merged in PR #13 | Contact tracker with its own pipeline, interaction history, reminders, STAR story library, and per-application interview preparation. |
 | Analytics and server reminders | Merged in PR #14 | Immutable stage-event history, honest counts-first analytics, and an opt-in scheduled email digest of due follow-ups. |
+| CV builder from reusable blocks | In progress | Reusable CV blocks, a STAR story reading view, and role-targeted CV assembly from material the user has already written. |
+| Speculative outreach tracking | In progress | Emails to leaders at companies of interest, sent through the existing Gmail connection and kept exactly as delivered. |
 
 PR #10: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/10>
 PR #13: <https://github.com/EugeneZherebetsky/ezherebetskii-site/pull/13>
@@ -176,6 +178,45 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 - One preparation record per application, enforced by a unique index; concurrent creation from two devices resolves to a clear conflict message.
 - Preparation saves are locked against the record version the open draft was loaded from, not the latest Realtime state, so a background refresh cannot let a stale draft silently overwrite another device's save.
 
+### CV builder
+
+- `cv_blocks` holds reusable CV content the user has already written and verified: profile summary, skills, experience, achievement, education, certification, and other.
+- STAR stories are the experience evidence and are offered to the builder alongside blocks; they are matched on their full STAR text but assembled as a single bullet.
+- A story bullet is composed only from the story's own sentences — the opening of the Action and, when present, the opening of the Result. Nothing is generated, and no model is called.
+- The target role is either an application with a job description or pasted requirements. Requirements are the same locally derived keywords used elsewhere, so ranking is consistent across the app.
+- Ranking is by how many role requirements an item actually contains, and the matched keywords are shown, so the order is explainable rather than a black-box score.
+- Coverage shows which requirements the current selection evidences and which it does not. Missing terms are a prompt to add a block the user genuinely has, never a score, and the interface says so.
+- The assembled preview follows the selection until it is edited by hand, then stops overwriting and offers an explicit rebuild instead.
+- The target application is captured when it is chosen and held until the target changes, so a Realtime reload cannot raise its version and let the CV link pass an optimistic-lock check against a change the builder never saw.
+- Changing the target role clears the selection, the assembled text, and the auto-filled name, with confirmation when there is work to lose. Everything on screen belongs to one role.
+- Relevance ranking orders the picker only. Assembly within a section uses the saved block order, with titles breaking ties, because how a CV should read is not the same question as which block matched most words.
+- Once the CV row is inserted the builder closes on every path, including a failed link. Retrying a whole save would insert a second identical CV under a fresh id, so a link failure instead names the application and asks the user to link it from the application's own CV selector.
+- Saving creates a new text CV in the library and never overwrites an existing one. When the target was an application, the CV can be linked to it with the same optimistic-lock handling used by AI tailoring.
+- Deleting a block does not alter CVs already built from it, because assembly copies text rather than referencing it.
+
+### Speculative outreach
+
+- `outreach_emails` records a message written directly to a leader at a company of interest, whether or not a role is advertised.
+- The row stores the **exact subject and body that were sent**, not a summary. A database trigger freezes the delivered content, recipient, company, attachment and message id once `status` is `sent`; only reply state, follow-up date and notes stay editable.
+- The one exception is `cv_id`, which may become null. Deleting a CV nulls it through `ON DELETE SET NULL`, and refusing that change rolled back the whole CV deletion, so deleting any CV ever attached to outreach failed. The reference may now be cleared but never repointed at a different CV, and `attachment_filename` still records what was sent.
+- Sending reuses the existing Gmail path: `requestGoogleAccess`, `buildRawEmail`, `sendGmailMessage`, and `cvEmailAttachment` for the CV.
+- A send attempt is committed to the database **before** Gmail is called: the row moves to `sending` with a `send_attempt_id` and `send_attempted_at`. Recording the provider id only after a successful response was not enough, because Gmail can accept a message while its response is lost, which left an ordinary draft that a second press would deliver twice.
+- While a row is `sending` its content is frozen on every device, it cannot be sent again, it cannot be deleted, and it may only resolve to `sent` or back to `draft`. Deletion is blocked because that row is the only thing standing between an unknown outcome and a second copy of the same message.
+- The transition to `sending` matches the exact row version this client just saved, not merely `status = 'draft'`. The raw MIME was built from that payload, so a concurrent edit must abort the send rather than let older text be delivered while newer text is frozen as the record of it.
+- Only a **terminal client error** (4xx other than 408) proves Gmail rejected the request, and the row then returns to draft automatically. A 5xx, a 408, and any transport failure all leave the outcome unknown, because Gmail can fail on its own side after accepting a message; reverting those would invite a duplicate send.
+- An unknown outcome is resolved by the user, not guessed: the app holds only the `gmail.send` scope and cannot read the mailbox, so it asks them to look in their own Sent folder and then record sent or not sent. Reading the mailbox to reconcile automatically needs an additional scope and belongs with Gmail thread tracking.
+- If Gmail succeeds and only the record update fails, the pending message id is held in a per-user browser queue and the retry updates the existing row rather than sending again.
+- `recordOutreachSent` updates only rows still in `draft`, and treats an already-recorded row with the same message id as success, so a duplicate retry is harmless.
+- A message can be linked to a saved contact, which fills the recipient fields, and to the CV that was attached.
+- Follow-up dates appear in Reminders, in browser notifications, and in the scheduled email digest. A message marked as replied stops appearing.
+- The suggested starter message deliberately leaves bracketed gaps, and sending with an unfilled placeholder asks for confirmation. A speculative email that never says why this company reads as a circular.
+
+### STAR story reading
+
+- Story cards show all four STAR parts at a glance, with parts that are not yet recorded marked as missing rather than hidden.
+- A reading view shows the complete story, its skills, and its usage notes without entering edit mode, and hands off to the editor.
+- Ranked story suggestions in the interview panel open the same reading view.
+
 ### Analytics
 
 - `job_stage_events` records immutable application-stage history: a `created` event on insert and a `status_change` event on every status transition, written by a protected trigger.
@@ -210,6 +251,11 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/components/InterviewPrep.tsx` | Upcoming interviews, likely topics, story ranking, checklist, preparation notes, and the STAR library. |
 | `src/components/StarStoryForm.tsx` | STAR story editor. |
 | `src/components/Analytics.tsx` | Counts-first analytics view: weekly effort, funnel, response times, sources, and CV performance. |
+| `src/components/StarStoryView.tsx` | Read-only STAR story view with missing-part warnings. |
+| `src/components/CVBuilder.tsx` | Role targeting, ranked blocks and stories, coverage, editable preview, and saving a built CV. |
+| `src/components/CVBlockForm.tsx` | Reusable CV block editor. |
+| `src/components/Outreach.tsx` | Speculative outreach list, summary counts, and reply filters. |
+| `src/components/OutreachForm.tsx` | Outreach composer, Gmail send, and the read-only record of a sent email. |
 | `src/lib/supabase.ts` | Browser Supabase client using public environment values. |
 | `src/lib/opportunities.ts` | Application conversions, filtering, dates, board columns, CSV, and JSON helpers. |
 | `src/lib/cvs.ts` | CV file validation, safe filenames, downloads, and attachment preparation. |
@@ -218,11 +264,13 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `src/lib/tailoring.ts` | Keyword normalization, CV ranking, top-keyword extraction, Edge Function invocation, and saved/copyable text creation. |
 | `src/lib/networking.ts` | Contact, interaction, story, and preparation conversions; contact filtering; interview-topic derivation and story ranking. |
 | `src/lib/analytics.ts` | Pure analytics functions: reached statuses, funnel, weekly buckets, median response time, grouped outcomes. |
+| `src/lib/cvBuilder.ts` | Role requirements, candidate ranking, story-to-bullet derivation, CV assembly, and coverage reporting. |
+| `src/lib/outreach.ts` | Outreach conversions, filtering, summary counts, follow-up scheduling, and the suggested message. |
 | `src/types.ts` | Shared application, CV, contact, interaction, STAR story, interview-preparation, stage-event, settings, send-history, status, and draft types. |
 | `src/lib/*.test.ts` | Vitest unit tests for the pure library logic. Run with `npm test`. |
 | `src/styles.css` | Desktop and mobile layout. |
 | `../supabase/functions/tailor-cv/index.ts` | Authenticated OpenAI server integration and generation accounting. |
-| `../supabase/functions/send-reminders/index.ts` | Cron-invoked reminder digests: secret check, per-user due items, Resend delivery, and dedup records. |
+| `../supabase/functions/send-reminders/index.ts` | Cron-invoked reminder digests covering application, networking, and outreach follow-ups. |
 | `../supabase/migrations/` | Replayable database history. Never replace migrations with untracked dashboard-only changes. |
 
 ## Database and storage map
@@ -236,7 +284,9 @@ Professional PDF/DOCX CV output (previously Phase 10) is deferred: CVs and cover
 | `public.ai_generations` | Server-only generation status, model, usage, and rolling-limit accounting. |
 | `public.contacts` | Networking contacts, relationship type, pipeline stage, optional opportunity link, next action, version, and extension data. |
 | `public.contact_interactions` | Logged conversations per contact with channel, time, and summary. |
-| `public.star_stories` | Reusable STAR interview examples with skills and notes. |
+| `public.star_stories` | Reusable STAR interview examples with skills and notes; also the experience evidence offered to the CV builder. |
+| `public.cv_blocks` | Reusable typed CV content: summary, skills, experience, achievement, education, certification, other. |
+| `public.outreach_emails` | Speculative emails to company leaders, holding the exact delivered message, Gmail ids, reply state, and follow-up date. |
 | `public.interview_preps` | One preparation record per application: research notes, questions, checklist, and post-interview notes. |
 | `public.job_stage_events` | Immutable application-stage history; synthetic backfills are marked for exclusion from duration metrics. |
 | `public.reminder_deliveries` | Server-managed log deduplicating sent reminder emails per (user, item, due time); users can read their own rows. |
@@ -282,6 +332,10 @@ Supabase considers an update that changes zero rows successful, so checking only
 | `20260804120000_add_networking_and_interview_prep.sql` | Adds contacts, interactions, STAR stories, interview preparation, ownership checks, deletion broadcasts, and Realtime. |
 | `20260804170000_add_job_stage_events.sql` | Adds immutable stage-event history with a recording trigger and marked synthetic backfills. |
 | `20260804171000_add_server_reminders.sql` | Adds email-reminder settings, the delivery dedup log, and the hourly pg_cron invocation of `send-reminders`. |
+| `20260804180000_add_cv_blocks.sql` | Adds reusable CV blocks with RLS, ordering, deletion broadcast, and Realtime. |
+| `20260804190000_add_outreach_emails.sql` | Adds speculative outreach emails, freezes sent content, and lets outreach follow-ups enter the reminder digest. |
+| `20260804200000_harden_outreach_send.sql` | Adds the in-flight `sending` state and allows a deleted CV to null its outreach reference. |
+| `20260804201000_allow_outreach_attempt_reset.sql` | Lets the send attempt identifier be cleared when an unsent message returns to draft. |
 
 For a schema change:
 
@@ -318,7 +372,11 @@ These rules come from defects already found during review. Treat them as regress
 18. **Keep user input after a failed write.** Clear a form field only once the handler confirms the record was saved. A resolved promise is not evidence of success.
 19. **Never request more rows than `api.max_rows`.** A `.limit()` above the configured cap is silently truncated; page with `.range()` until a short page arrives. With ascending order the truncation hides the newest data, which is usually the data that matters.
 20. **Bucket calendar periods by calendar keys.** Daylight-saving weeks are 167 or 169 hours long, so dividing elapsed milliseconds by a fixed week misassigns every bucket after a transition.
-21. **Claim only the guarantee the protocol actually provides.** Recording an outcome after an irreversible external action gives at-least-once behaviour, not exactly-once. Name the failure mode in both the interface and the documentation instead of promising the stronger property.
+21. **Never offer a retry that repeats a step which already succeeded.** After a multi-step save, the failure message must name the step that failed and the recovery path for it. Re-running the whole action duplicates the committed record.
+22. **Claim only the guarantee the protocol actually provides.** Recording an outcome after an irreversible external action gives at-least-once behaviour, not exactly-once. Name the failure mode in both the interface and the documentation instead of promising the stronger property.
+23. **Persist the attempt before an irreversible external call, not after it.** Recording the outcome afterwards leaves a window in which the call succeeded but nothing local knows, so a retry repeats it. Commit an in-flight marker first, claim it against the exact version whose payload was sent, freeze it while it is open, refuse to delete it, and resolve unknown outcomes explicitly rather than guessing.
+24. **Only a refusal proves nothing happened.** A 4xx means the request was rejected; a 5xx, a timeout, or a dropped connection can all follow a request that was already carried out. Classify those as unknown, never as failed.
+25. **A trigger that guards a column must allow what a foreign key does to it.** `ON DELETE SET NULL` performs an update; refusing it rolls back the parent delete and silently breaks an unrelated feature.
 
 ## Environment and secrets
 
