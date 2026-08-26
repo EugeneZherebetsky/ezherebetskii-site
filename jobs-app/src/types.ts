@@ -36,7 +36,7 @@ export type WorkMode = (typeof WORK_MODES)[number]
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const
 export type JobPriority = (typeof PRIORITIES)[number]
 
-export const APP_VIEWS = ['dashboard', 'board', 'applications', 'reminders', 'contacts', 'interviews', 'analytics', 'cvs', 'search', 'backup', 'settings'] as const
+export const APP_VIEWS = ['dashboard', 'board', 'applications', 'reminders', 'contacts', 'outreach', 'interviews', 'analytics', 'cvs', 'search', 'backup', 'settings'] as const
 export type AppView = (typeof APP_VIEWS)[number]
 export type DefaultView = Extract<AppView, 'dashboard' | 'board' | 'applications' | 'reminders' | 'cvs'>
 
@@ -429,4 +429,84 @@ export const EMPTY_CV: CVDraft = {
   notes: '',
   plain_text: '',
   tailored_company: '',
+}
+
+export const OUTREACH_STATUSES = ['draft', 'sending', 'sent', 'failed'] as const
+export type OutreachStatus = (typeof OUTREACH_STATUSES)[number]
+
+export const OUTREACH_STATUS_LABELS: Record<OutreachStatus, string> = {
+  draft: 'Draft',
+  sending: 'Outcome unknown',
+  sent: 'Sent',
+  failed: 'Failed',
+}
+
+export const REPLY_STATUSES = ['awaiting', 'replied', 'no_reply'] as const
+export type ReplyStatus = (typeof REPLY_STATUSES)[number]
+
+export const REPLY_STATUS_LABELS: Record<ReplyStatus, string> = {
+  awaiting: 'Awaiting reply',
+  replied: 'Replied',
+  no_reply: 'No reply',
+}
+
+/**
+ * A speculative email to a leader at a company of interest. Once `status` is
+ * `sent` the delivered content is frozen by a database trigger; only the
+ * outcome fields stay editable.
+ */
+export type OutreachEmail = {
+  id: string
+  user_id: string
+  company: string
+  recipient_name: string | null
+  recipient_role: string | null
+  recipient_email: string
+  contact_id: string | null
+  cv_id: string | null
+  job_id: string | null
+  subject: string
+  body: string
+  status: OutreachStatus
+  sent_at: string | null
+  send_attempt_id: string | null
+  send_attempted_at: string | null
+  provider: string
+  provider_message_id: string | null
+  provider_thread_id: string | null
+  attachment_filename: string | null
+  reply_status: ReplyStatus
+  replied_at: string | null
+  follow_up_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  version: number
+  data: Record<string, unknown>
+}
+
+export type OutreachDraft = {
+  company: string
+  recipient_name: string
+  recipient_role: string
+  recipient_email: string
+  contact_id: string
+  cv_id: string
+  subject: string
+  body: string
+  follow_up_at: string
+  notes: string
+}
+
+export const EMPTY_OUTREACH: OutreachDraft = {
+  company: '',
+  recipient_name: '',
+  recipient_role: '',
+  recipient_email: '',
+  contact_id: '',
+  cv_id: '',
+  subject: '',
+  body: '',
+  follow_up_at: '',
+  notes: '',
 }

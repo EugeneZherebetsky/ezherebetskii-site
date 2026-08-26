@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
-import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, hasGoogleAccess, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
+import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, hasGoogleAccess, isGoogleRefusal, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
 import {
   ACTIVE_STATUSES,
   BOARD_COLUMNS,
@@ -19,6 +19,7 @@ import {
   toDraft,
 } from '../lib/opportunities'
 import { blockDraftToPayload, blockToDraft } from '../lib/cvBuilder'
+import { dueOutreachFollowUps, outreachDraftToPayload, outreachToDraft } from '../lib/outreach'
 import {
   contactDraftToPayload,
   contactToDraft,
@@ -34,6 +35,7 @@ import {
   EMPTY_CV,
   EMPTY_CV_BLOCK,
   EMPTY_JOB,
+  EMPTY_OUTREACH,
   EMPTY_STAR_STORY,
   JOB_STATUSES,
   STATUS_LABELS,
@@ -56,6 +58,8 @@ import {
   type JobDraft,
   type JobStageEvent,
   type JobStatus,
+  type OutreachDraft,
+  type OutreachEmail,
   type SettingsDraft,
   type StarStory,
   type StarStoryDraft,
@@ -70,6 +74,8 @@ import { CVForm } from './CVForm'
 import { InterviewPrepView } from './InterviewPrep'
 import { JobForm } from './JobForm'
 import { JobSearch } from './JobSearch'
+import { OutreachView } from './Outreach'
+import { OutreachForm, type OutreachOutcome } from './OutreachForm'
 import { StarStoryForm } from './StarStoryForm'
 import { StarStoryView } from './StarStoryView'
 import type { JobSearchResult } from '../lib/jobSearch'
@@ -82,6 +88,7 @@ const NAV_ITEMS: Array<{ view: AppView; label: string; symbol: string }> = [
   { view: 'applications', label: 'Applications', symbol: '≡' },
   { view: 'reminders', label: 'Reminders', symbol: '◷' },
   { view: 'contacts', label: 'Network', symbol: '◎' },
+  { view: 'outreach', label: 'Outreach', symbol: '✉' },
   { view: 'interviews', label: 'Interviews', symbol: '✦' },
   { view: 'analytics', label: 'Analytics', symbol: '◔' },
   { view: 'cvs', label: 'CV library', symbol: '▤' },
@@ -169,6 +176,33 @@ function JobBadges({ job }: { job: Job }) {
 type WorkspaceProps = { session: Session }
 
 const PENDING_SEND_PREFIX = 'opportunity-desk:pending-gmail-history:'
+const PENDING_OUTREACH_PREFIX = 'opportunity-desk:pending-outreach-record:'
+
+/** A Gmail message that was accepted but whose outreach row was not updated. */
+type PendingOutreachRecord = {
+  outreach_id: string
+  provider_message_id: string
+  provider_thread_id: string | null
+  attachment_filename: string | null
+  sent_at: string
+}
+
+function pendingOutreachKey(userId: string) {
+  return `${PENDING_OUTREACH_PREFIX}${userId}`
+}
+
+function readPendingOutreach(userId: string): PendingOutreachRecord | null {
+  try {
+    const raw = localStorage.getItem(pendingOutreachKey(userId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PendingOutreachRecord>
+    if (!parsed.outreach_id || !parsed.provider_message_id || !parsed.sent_at) return null
+    return parsed as PendingOutreachRecord
+  }
+  catch {
+    return null
+  }
+}
 
 function pendingSendStorageKey(userId: string) {
   return `${PENDING_SEND_PREFIX}${userId}`
@@ -217,6 +251,9 @@ export function Workspace({ session }: WorkspaceProps) {
   const [interviewPreps, setInterviewPreps] = useState<InterviewPrep[]>([])
   const [stageEvents, setStageEvents] = useState<JobStageEvent[]>([])
   const [cvBlocks, setCVBlocks] = useState<CVBlock[]>([])
+  const [outreachEmails, setOutreachEmails] = useState<OutreachEmail[]>([])
+  const [editingOutreach, setEditingOutreach] = useState<OutreachEmail | 'new' | null>(null)
+  const [pendingOutreach, setPendingOutreach] = useState<PendingOutreachRecord | null>(() => readPendingOutreach(session.user.id))
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [settingsPersisted, setSettingsPersisted] = useState(false)
   const [view, setView] = useState<AppView>('dashboard')
@@ -259,7 +296,7 @@ export function Workspace({ session }: WorkspaceProps) {
   }
 
   const loadWorkspace = useCallback(async () => {
-    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, storiesResult, prepsResult, stageEventsResult, blocksResult] = await Promise.all([
+    const [jobsResult, cvsResult, settingsResult, sendsResult, contactsResult, storiesResult, prepsResult, stageEventsResult, blocksResult, outreachResult] = await Promise.all([
       supabase.from('jobs').select('*').order('updated_at', { ascending: false }),
       supabase.from('cvs').select('*').order('updated_at', { ascending: false }),
       supabase.from('user_settings').select('*').eq('user_id', session.user.id).maybeSingle(),
@@ -272,6 +309,7 @@ export function Workspace({ session }: WorkspaceProps) {
       supabase.from('interview_preps').select('*'),
       fetchAllStageEvents(),
       supabase.from('cv_blocks').select('*').order('block_type', { ascending: true }).order('sort_order', { ascending: true }),
+      supabase.from('outreach_emails').select('*').order('updated_at', { ascending: false }).limit(1000),
     ])
 
     if (jobsResult.error) setError(jobsResult.error.message)
@@ -303,6 +341,9 @@ export function Workspace({ session }: WorkspaceProps) {
 
     if (blocksResult.error) setError(blocksResult.error.message)
     else setCVBlocks((blocksResult.data ?? []) as CVBlock[])
+
+    if (outreachResult.error) setError(outreachResult.error.message)
+    else setOutreachEmails((outreachResult.data ?? []) as OutreachEmail[])
 
     if (settingsResult.error) {
       setError(settingsResult.error.message)
@@ -377,6 +418,8 @@ export function Workspace({ session }: WorkspaceProps) {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'job_stage_events', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'cv_blocks', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'cv_blocks', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'outreach_emails', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'outreach_emails', filter: `user_id=eq.${session.user.id}` }, () => void loadWorkspace())
         .subscribe()
     }
 
@@ -429,17 +472,26 @@ export function Workspace({ session }: WorkspaceProps) {
           `${contact.name}${contact.company ? ` · ${contact.company}` : ''} · ${relativeDueLabel(contact.next_action_at)}`,
         )(contact.next_action_at)
       })
+      outreachEmails.forEach((email) => {
+        if (!email.follow_up_at || email.status !== 'sent' || email.reply_status === 'replied') return
+        notifyOnce(
+          `opportunity-desk-notified:outreach:${email.id}:${email.follow_up_at}`,
+          'Outreach follow-up',
+          `${email.company}${email.recipient_name ? ` · ${email.recipient_name}` : ''} · ${relativeDueLabel(email.follow_up_at)}`,
+        )(email.follow_up_at)
+      })
     }
 
     showDueNotifications()
     const timer = window.setInterval(showDueNotifications, 60_000)
     return () => window.clearInterval(timer)
-  }, [contacts, jobs, settings])
+  }, [contacts, jobs, outreachEmails, settings])
 
   const visibleJobs = useMemo(() => jobs.filter((job) => jobMatches(job, search, filter)), [filter, jobs, search])
   const reminders = useMemo(() => jobs
     .filter((job) => job.next_action_at && ACTIVE_STATUSES.includes(job.status))
     .sort((left, right) => new Date(left.next_action_at!).getTime() - new Date(right.next_action_at!).getTime()), [jobs])
+  const outreachReminders = useMemo(() => dueOutreachFollowUps(outreachEmails), [outreachEmails])
   const contactReminders = useMemo(() => contacts
     .filter((contact) => contact.next_action_at && contact.pipeline_stage !== 'closed')
     .sort((left, right) => new Date(left.next_action_at!).getTime() - new Date(right.next_action_at!).getTime()), [contacts])
@@ -738,6 +790,291 @@ export function Workspace({ session }: WorkspaceProps) {
       setNotice('STAR story saved and synchronized.')
       await loadWorkspace()
     }
+    setBusy(false)
+  }
+
+  function rememberPendingOutreach(record: PendingOutreachRecord) {
+    setPendingOutreach(record)
+    try {
+      localStorage.setItem(pendingOutreachKey(session.user.id), JSON.stringify(record))
+    }
+    catch {
+      // The in-memory retry remains available when browser storage is unavailable.
+    }
+  }
+
+  function forgetPendingOutreach() {
+    setPendingOutreach(null)
+    try {
+      localStorage.removeItem(pendingOutreachKey(session.user.id))
+    }
+    catch {
+      // Nothing else is required when browser storage is unavailable.
+    }
+  }
+
+  /** Marks an outreach row as sent. Used by the send path and by its retry. */
+  async function recordOutreachSent(record: PendingOutreachRecord) {
+    const { data, error: updateError } = await supabase
+      .from('outreach_emails')
+      .update({
+        status: 'sent',
+        sent_at: record.sent_at,
+        provider_message_id: record.provider_message_id,
+        provider_thread_id: record.provider_thread_id,
+        attachment_filename: record.attachment_filename,
+      })
+      .eq('id', record.outreach_id)
+      .eq('status', 'sending')
+      .select('id')
+      .maybeSingle()
+    if (updateError) throw updateError
+    if (!data) {
+      // Already recorded, by an earlier retry or another device.
+      const { data: existing, error: lookupError } = await supabase
+        .from('outreach_emails')
+        .select('id, provider_message_id')
+        .eq('id', record.outreach_id)
+        .maybeSingle()
+      if (lookupError) throw lookupError
+      if (!existing || existing.provider_message_id !== record.provider_message_id) {
+        throw new Error('The outreach record could not be updated to match the sent message.')
+      }
+    }
+  }
+
+  async function saveOutreachDraft(draft: OutreachDraft) {
+    if (!editingOutreach) return
+    const recordBeingEdited = editingOutreach
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = outreachDraftToPayload(draft)
+    const result = recordBeingEdited === 'new'
+      ? await supabase.from('outreach_emails').insert({ ...payload, user_id: session.user.id, status: 'draft' }).select('id, version').maybeSingle()
+      : await supabase.from('outreach_emails').update(payload).eq('id', recordBeingEdited.id).eq('version', recordBeingEdited.version).select('id, version').maybeSingle()
+
+    if (result.error) setError(result.error.message)
+    else if (!result.data && recordBeingEdited !== 'new') {
+      const { data: latest, error: latestError } = await supabase.from('outreach_emails').select('version').eq('id', recordBeingEdited.id).maybeSingle()
+      if (latestError) setError(latestError.message)
+      else if (!latest) setError('This message was deleted on another device. Your unsaved edits remain open.')
+      else {
+        setEditingOutreach({ ...recordBeingEdited, version: latest.version })
+        setError('This message changed on another device. Your edits remain open. Review them, then save again.')
+      }
+      await loadWorkspace()
+    } else {
+      setEditingOutreach(null)
+      setNotice('Outreach draft saved and synchronized.')
+      await loadWorkspace()
+    }
+    setBusy(false)
+  }
+
+  /**
+   * Persists the draft, sends it through Gmail, then records the result. The
+   * row always exists before Gmail is called, so a failure after sending can
+   * be finished by updating that row rather than by sending a second message.
+   */
+  async function sendOutreach(draft: OutreachDraft) {
+    if (!editingOutreach) return
+    if (pendingOutreach) {
+      setError('Finish recording the previous sent message before sending another. Retrying the record does not resend it.')
+      return
+    }
+    const recordBeingEdited = editingOutreach
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = outreachDraftToPayload(draft)
+    // Tracks whether the attempt was committed, which decides whether a
+    // failure leaves the outcome genuinely unknown.
+    let inFlight = false
+
+    try {
+      const saved = recordBeingEdited === 'new'
+        ? await supabase.from('outreach_emails').insert({ ...payload, user_id: session.user.id, status: 'draft' }).select('id, version').maybeSingle()
+        : await supabase.from('outreach_emails').update(payload).eq('id', recordBeingEdited.id).eq('version', recordBeingEdited.version).select('id, version').maybeSingle()
+      if (saved.error) throw saved.error
+      if (!saved.data) throw new Error('This message changed on another device. Reload it, review the text, then send again.')
+      const outreachId = saved.data.id as string
+
+      const cv = payload.cv_id ? cvs.find((candidate) => candidate.id === payload.cv_id) : undefined
+      if (payload.cv_id && !cv) throw new Error('The selected CV is no longer available. Choose another before sending.')
+
+      // Everything that can fail without delivering anything happens first, so
+      // the window in which the outcome is unknowable is only the Gmail call.
+      const token = await requestGoogleAccess(session.user.id, googleClientId())
+      setGoogleConnected(true)
+      const attachment = cv ? await cvEmailAttachment(cv) : null
+      const raw = buildRawEmail(payload.recipient_email, payload.subject, payload.body, attachment)
+
+      // The attempt is committed before Gmail is called. If the response is
+      // lost the row stays in `sending`, which freezes its content on every
+      // device and refuses a second send until the outcome is recorded.
+      const attemptedAt = new Date().toISOString()
+      const { data: claimed, error: claimError } = await supabase
+        .from('outreach_emails')
+        .update({ status: 'sending', send_attempt_id: crypto.randomUUID(), send_attempted_at: attemptedAt })
+        .eq('id', outreachId)
+        .eq('status', 'draft')
+        .select('id')
+        .maybeSingle()
+      if (claimError) throw claimError
+      if (!claimed) throw new Error('This message is already being sent, or has been sent, on another device. Reload before trying again.')
+      inFlight = true
+
+      let gmailMessage: { id: string; threadId?: string }
+      try {
+        gmailMessage = await sendGmailMessage(token, raw)
+      }
+      catch (sendError) {
+        if (isGoogleRefusal(sendError)) {
+          // Gmail answered and refused, so nothing was delivered and the
+          // message can safely go back to being an editable draft.
+          await supabase
+            .from('outreach_emails')
+            .update({ status: 'draft', send_attempt_id: null, send_attempted_at: null })
+            .eq('id', outreachId)
+            .eq('status', 'sending')
+          inFlight = false
+        }
+        throw sendError
+      }
+
+      const record: PendingOutreachRecord = {
+        outreach_id: outreachId,
+        provider_message_id: gmailMessage.id,
+        provider_thread_id: gmailMessage.threadId ?? null,
+        attachment_filename: attachment?.filename ?? null,
+        sent_at: new Date().toISOString(),
+      }
+      rememberPendingOutreach(record)
+      try {
+        await recordOutreachSent(record)
+        forgetPendingOutreach()
+        setEditingOutreach(null)
+        setNotice(`Email sent to ${payload.recipient_email} and saved exactly as delivered.`)
+      }
+      catch {
+        setError('Gmail sent the email, but its record could not be updated. Use “Retry record sync”; it will not send the message again.')
+      }
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setGoogleConnected(hasGoogleAccess(session.user.id, settings?.google_client_id))
+      const message = caught instanceof Error ? caught.message : 'The outreach email could not be sent.'
+      setError(isGoogleRefusal(caught) || !inFlight
+        ? message
+        : `${message} Gmail may still have delivered this message, so it is held with an unknown outcome. Check your Sent folder and record the result rather than sending again.`)
+      await loadWorkspace()
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Resolves a message whose Gmail response was lost. The user checks their
+   * own Sent folder, because the app holds only the send scope and cannot
+   * read the mailbox to find out.
+   */
+  async function resolveOutreachAttempt(email: OutreachEmail, delivered: boolean) {
+    const question = delivered
+      ? `Confirm the email to ${email.recipient_email} was delivered? It will be recorded as sent, without a Gmail message id.`
+      : `Confirm the email to ${email.recipient_email} was NOT delivered? It returns to a draft you can edit and send. Sending again when it did arrive would deliver a duplicate.`
+    if (!window.confirm(question)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const payload = delivered
+      ? {
+          status: 'sent' as const,
+          sent_at: email.send_attempted_at ?? new Date().toISOString(),
+          data: { ...email.data, delivery_confirmed_manually: true },
+        }
+      : { status: 'draft' as const, send_attempt_id: null, send_attempted_at: null }
+    const { data, error: updateError } = await supabase
+      .from('outreach_emails')
+      .update(payload)
+      .eq('id', email.id)
+      .eq('status', 'sending')
+      .select('id')
+      .maybeSingle()
+    if (updateError) setError(updateError.message)
+    else if (!data) setError('This message was already resolved on another device. The latest version has been loaded.')
+    else {
+      setEditingOutreach(null)
+      setNotice(delivered ? 'Recorded as sent. Its content stays exactly as written.' : 'Returned to draft. Review it before sending again.')
+    }
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function retryOutreachSync() {
+    if (!pendingOutreach) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await recordOutreachSent(pendingOutreach)
+      forgetPendingOutreach()
+      setEditingOutreach(null)
+      setNotice('The sent email is now recorded. No second message was sent.')
+      await loadWorkspace()
+    }
+    catch (caught) {
+      setError(`The email was already sent, but its record still could not be updated. Retry when the connection is stable. ${caught instanceof Error ? caught.message : ''}`.trim())
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  async function updateOutreachOutcome(email: OutreachEmail, outcome: OutreachOutcome) {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: updateError } = await supabase
+      .from('outreach_emails')
+      .update({
+        reply_status: outcome.reply_status,
+        replied_at: outcome.reply_status === 'replied' ? (email.replied_at ?? new Date().toISOString()) : null,
+        follow_up_at: outcome.follow_up_at ? new Date(outcome.follow_up_at).toISOString() : null,
+        notes: outcome.notes.trim() || null,
+      })
+      .eq('id', email.id)
+      .eq('version', email.version)
+      .select('id')
+      .maybeSingle()
+    if (updateError) setError(updateError.message)
+    else if (!data) setError('This message changed on another device. The latest version has been loaded; review it and save again.')
+    else {
+      setEditingOutreach(null)
+      setNotice('Outreach outcome saved and synchronized.')
+    }
+    await loadWorkspace()
+    setBusy(false)
+  }
+
+  async function deleteOutreach(email: OutreachEmail) {
+    if (pendingOutreach?.outreach_id === email.id) {
+      setError('Finish recording this sent message before deleting it.')
+      return
+    }
+    const warning = email.status === 'sent'
+      ? `Delete the record of the email sent to ${email.recipient_email}? The message itself stays in Gmail, but this copy of what you sent cannot be recovered.`
+      : `Delete this draft to ${email.company}? This cannot be undone.`
+    if (!window.confirm(warning)) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    const { data, error: deleteError } = await supabase.from('outreach_emails').delete().eq('id', email.id).eq('version', email.version).select('id').maybeSingle()
+    if (deleteError) setError(deleteError.message)
+    else if (!data) setError('This message changed or was deleted on another device. The latest list has been loaded.')
+    else setNotice('Outreach record deleted.')
+    await loadWorkspace()
     setBusy(false)
   }
 
@@ -1485,7 +1822,7 @@ export function Workspace({ session }: WorkspaceProps) {
         <main className="dashboard">
           <section className="page-head">
             <div><p className="eyebrow">Private synchronized workspace</p><h1>{viewTitle(view)}</h1></div>
-            <button className="button primary add-button" onClick={() => { setError(''); if (view === 'cvs') setEditingCV('new'); else if (view === 'contacts') setEditingContact('new'); else if (view === 'interviews') setEditingStar('new'); else setEditing('new') }}>{view === 'cvs' ? '+ Add CV' : view === 'contacts' ? '+ Add contact' : view === 'interviews' ? '+ Add STAR story' : '+ Add application'}</button>
+            <button className="button primary add-button" onClick={() => { setError(''); if (view === 'cvs') setEditingCV('new'); else if (view === 'contacts') setEditingContact('new'); else if (view === 'outreach') setEditingOutreach('new'); else if (view === 'interviews') setEditingStar('new'); else setEditing('new') }}>{view === 'cvs' ? '+ Add CV' : view === 'contacts' ? '+ Add contact' : view === 'outreach' ? '+ Write to a company' : view === 'interviews' ? '+ Add STAR story' : '+ Add application'}</button>
           </section>
 
           {pendingSendHistory && <div className="sync-retry-banner" role="alert"><span><strong>Email already sent; history pending</strong>The Gmail message to {pendingSendHistory.recipient} is saved in this browser for retry. This action records that same message and will not send it again.</span><button className="button secondary" disabled={busy} onClick={() => void retrySendHistory()}>{busy ? 'Retrying...' : 'Retry history sync'}</button></div>}
@@ -1496,7 +1833,8 @@ export function Workspace({ session }: WorkspaceProps) {
               {view === 'dashboard' && <DashboardView jobs={jobs} counts={counts} reminders={reminders} onEdit={openEditor} onViewAll={() => setView('applications')} />}
               {view === 'board' && <BoardView jobs={jobs} cvs={cvs} busy={busy} onEdit={openEditor} onStatus={changeStatus} onCV={changeJobCV} />}
               {view === 'applications' && <ApplicationsView jobs={visibleJobs} cvs={cvs} sends={applicationSends} total={jobs.length} search={search} filter={filter} busy={busy} onSearch={setSearch} onFilter={setFilter} onEdit={openEditor} onTailor={(job) => { setError(''); setNotice(''); setTailoringJob(job) }} onDelete={deleteJob} onDownloadCV={downloadCV} />}
-              {view === 'reminders' && <RemindersView jobs={reminders} contacts={contactReminders} onEdit={openEditor} onEditContact={(contact) => { setError(''); setEditingContact(contact) }} onEnable={enableNotifications} />}
+              {view === 'reminders' && <RemindersView jobs={reminders} contacts={contactReminders} outreach={outreachReminders} onEdit={openEditor} onEditContact={(contact) => { setError(''); setEditingContact(contact) }} onOpenOutreach={(email) => { setError(''); setEditingOutreach(email) }} onEnable={enableNotifications} />}
+              {view === 'outreach' && <OutreachView emails={outreachEmails} busy={busy} onCompose={() => { setError(''); setNotice(''); setEditingOutreach('new') }} onOpen={(email) => { setError(''); setNotice(''); setEditingOutreach(email) }} onDelete={deleteOutreach} />}
               {view === 'contacts' && <ContactsView contacts={contacts} jobs={jobs} busy={busy} onAdd={() => { setError(''); setEditingContact('new') }} onEdit={(contact) => { setError(''); setEditingContact(contact) }} onDelete={deleteContact} onStage={changeContactStage} />}
               {view === 'interviews' && <InterviewPrepView jobs={jobs} preps={interviewPreps} stories={starStories} busy={busy} onSavePrep={saveInterviewPrep} onAddStory={() => { setError(''); setEditingStar('new') }} onViewStory={(story) => { setError(''); setViewingStar(story) }} onEditStory={(story) => { setError(''); setEditingStar(story) }} onDeleteStory={deleteStarStory} />}
               {view === 'analytics' && <AnalyticsView jobs={jobs} contacts={contacts} cvs={cvs} stageEvents={stageEvents} />}
@@ -1513,6 +1851,24 @@ export function Workspace({ session }: WorkspaceProps) {
       {editingContact && <ContactForm initial={editingContact === 'new' ? EMPTY_CONTACT : contactToDraft(editingContact)} title={editingContact === 'new' ? 'Add a contact' : 'Update contact'} busy={busy} error={error} jobs={jobs} existing={editingContact !== 'new'} interactions={editingContact === 'new' ? [] : contactHistory} onCancel={() => { setError(''); setEditingContact(null) }} onSave={saveContact} onLogInteraction={logInteraction} onDeleteInteraction={deleteInteraction} />}
       {editingStar && <StarStoryForm initial={editingStar === 'new' ? EMPTY_STAR_STORY : starStoryToDraft(editingStar)} title={editingStar === 'new' ? 'Add a STAR story' : 'Update STAR story'} busy={busy} error={error} onCancel={() => { setError(''); setEditingStar(null) }} onSave={saveStarStory} />}
       {viewingStar && !editingStar && <StarStoryView story={starStories.find((story) => story.id === viewingStar.id) ?? viewingStar} onClose={() => setViewingStar(null)} onEdit={(story) => { setViewingStar(null); setError(''); setEditingStar(story) }} />}
+      {editingOutreach && <OutreachForm
+        initial={editingOutreach === 'new' ? EMPTY_OUTREACH : outreachToDraft(editingOutreach)}
+        sent={editingOutreach !== 'new' && editingOutreach.status === 'sent' ? editingOutreach : null}
+        inFlight={editingOutreach !== 'new' && editingOutreach.status === 'sending' ? editingOutreach : null}
+        title={editingOutreach === 'new' ? 'Write to a company' : editingOutreach.status === 'sent' ? 'Email as sent' : editingOutreach.status === 'sending' ? 'Send outcome unknown' : 'Outreach draft'}
+        busy={busy}
+        error={error}
+        cvs={cvs}
+        contacts={contacts}
+        googleConfigured={Boolean(settings?.google_client_id)}
+        syncPending={Boolean(pendingOutreach) && (editingOutreach === 'new' || pendingOutreach?.outreach_id === editingOutreach.id)}
+        onCancel={() => { setError(''); setEditingOutreach(null) }}
+        onSaveDraft={saveOutreachDraft}
+        onSend={sendOutreach}
+        onUpdateOutcome={updateOutreachOutcome}
+        onRetrySync={retryOutreachSync}
+        onResolveAttempt={resolveOutreachAttempt}
+      />}
       {editingBlock && <CVBlockForm initial={editingBlock === 'new' ? EMPTY_CV_BLOCK : blockToDraft(editingBlock)} title={editingBlock === 'new' ? 'Add a CV block' : 'Update CV block'} busy={busy} error={error} onCancel={() => { setError(''); setEditingBlock(null) }} onSave={saveCVBlock} />}
       {buildingCV && <CVBuilder jobs={jobs} blocks={cvBlocks} stories={starStories} busy={busy} error={error} notice={notice} onClose={() => { setError(''); setBuildingCV(false) }} onSave={saveBuiltCV} />}
       {editingCV && <CVForm initial={editingCV === 'new' ? EMPTY_CV : cvToDraft(editingCV)} title={editingCV === 'new' ? 'Add a CV' : 'Update CV'} existingFilename={editingCV === 'new' ? null : editingCV.original_filename || (editingCV.storage_path ? 'Stored file' : null)} busy={busy} error={error} onCancel={() => { setError(''); setEditingCV(null) }} onSave={saveCV} />}
@@ -1582,11 +1938,12 @@ function ApplicationsView({ jobs, cvs, sends, total, search, filter, busy, onSea
   return <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Your pipeline</p><h2>{total} applications</h2></div><div className="controls"><input aria-label="Search applications" placeholder="Search company, role or notes" value={search} onChange={(event) => onSearch(event.target.value)} /><select aria-label="Filter by status" value={filter} onChange={(event) => onFilter(event.target.value as 'all' | JobStatus)}><option value="all">All statuses</option>{JOB_STATUSES.map((status) => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}</select></div></div>{jobs.length === 0 ? <div className="empty-state"><strong>{total ? 'No matching applications' : 'Your pipeline is ready'}</strong><span>{total ? 'Try a different search or status.' : 'Add your first opportunity to start tracking it across devices.'}</span></div> : <div className="table-wrap"><table><thead><tr><th>Opportunity</th><th>Stage</th><th>CV used</th><th>Follow-up</th><th>Updated</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{jobs.map((job) => { const linkedCV = cvs.find((cv) => cv.id === job.cv_id); const lastSend = sends.find((send) => send.job_id === job.id && send.status === 'sent'); return <tr key={job.id}><td><strong>{job.role_title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span></td><td><JobBadges job={job} /></td><td>{linkedCV ? <><strong>{linkedCV.name}</strong><span>{linkedCV.tailored_company ? `Tailored for ${linkedCV.tailored_company}` : linkedCV.original_filename || 'Text-only CV'}</span>{linkedCV.storage_path && <button className="button ghost table-download" disabled={busy} onClick={() => void onDownloadCV(linkedCV)}>Download</button>}</> : <span>No CV linked</span>}{lastSend && <span className="sent-summary">Sent {formatDateTime(lastSend.sent_at)} to {lastSend.recipient}</span>}</td><td>{job.next_action_at ? <><strong>{job.next_action || 'Follow up'}</strong><span>{formatDateTime(job.next_action_at)}</span></> : <span>Not scheduled</span>}</td><td>{formatDateTime(job.updated_at)}</td><td><div className="row-actions">{job.job_url && <a className="button ghost" href={job.job_url} target="_blank" rel="noreferrer">Open</a>}<button className="button secondary" disabled={busy} onClick={() => onTailor(job)}>Tailor CV</button><button className="button secondary" onClick={() => onEdit(job)}>Edit</button><button className="button danger" disabled={busy} onClick={() => void onDelete(job)}>Delete</button></div></td></tr> })}</tbody></table></div>}</section>
 }
 
-function RemindersView({ jobs, contacts, onEdit, onEditContact, onEnable }: { jobs: Job[]; contacts: Contact[]; onEdit: (job: Job) => void; onEditContact: (contact: Contact) => void; onEnable: () => Promise<void> }) {
+function RemindersView({ jobs, contacts, outreach, onEdit, onEditContact, onOpenOutreach, onEnable }: { jobs: Job[]; contacts: Contact[]; outreach: OutreachEmail[]; onEdit: (job: Job) => void; onEditContact: (contact: Contact) => void; onOpenOutreach: (email: OutreachEmail) => void; onEnable: () => Promise<void> }) {
   return (
     <>
       <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Follow-up queue</p><h2>{jobs.length} scheduled actions</h2></div><button className="button secondary" onClick={() => void onEnable()}>Enable browser alerts</button></div>{jobs.length === 0 ? <div className="empty-state"><strong>Nothing is due</strong><span>Add a next action and date to an application to see it here.</span></div> : <div className="reminder-list">{jobs.map((job) => <button key={job.id} onClick={() => onEdit(job)}><time dateTime={job.next_action_at!}>{formatDateTime(job.next_action_at!)}</time><span><strong>{job.next_action || 'Follow up'}</strong><small>{job.role_title} at {job.company}</small></span><em className={new Date(job.next_action_at!).getTime() < Date.now() ? 'overdue' : ''}>{relativeDueLabel(job.next_action_at!)}</em></button>)}</div>}</section>
       {contacts.length > 0 && <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Networking</p><h2>{contacts.length} networking follow-ups</h2></div></div><div className="reminder-list">{contacts.map((contact) => <button key={contact.id} onClick={() => onEditContact(contact)}><time dateTime={contact.next_action_at!}>{formatDateTime(contact.next_action_at!)}</time><span><strong>{contact.next_action || 'Follow up'}</strong><small>{contact.name}{contact.company ? ` · ${contact.company}` : ''}</small></span><em className={new Date(contact.next_action_at!).getTime() < Date.now() ? 'overdue' : ''}>{relativeDueLabel(contact.next_action_at!)}</em></button>)}</div></section>}
+      {outreach.length > 0 && <section className="workspace-card"><div className="workspace-head"><div><p className="eyebrow">Speculative outreach</p><h2>{outreach.length} unanswered message{outreach.length === 1 ? '' : 's'}</h2></div></div><div className="reminder-list">{outreach.map((email) => <button key={email.id} onClick={() => onOpenOutreach(email)}><time dateTime={email.follow_up_at!}>{formatDateTime(email.follow_up_at!)}</time><span><strong>Follow up on “{email.subject}”</strong><small>{email.company}{email.recipient_name ? ` · ${email.recipient_name}` : ''}</small></span><em className={new Date(email.follow_up_at!).getTime() < Date.now() ? 'overdue' : ''}>{relativeDueLabel(email.follow_up_at!)}</em></button>)}</div></section>}
     </>
   )
 }
