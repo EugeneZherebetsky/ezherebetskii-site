@@ -117,9 +117,23 @@ export class GoogleResponseError extends Error {
   }
 }
 
-/** True when Google answered, so the request definitely did not take effect. */
+/** True when Google answered at all, whatever the status. */
 export function isGoogleRefusal(error: unknown): error is GoogleResponseError {
   return error instanceof GoogleResponseError
+}
+
+/**
+ * True only when Google rejected the request outright, so it certainly did not
+ * take effect.
+ *
+ * A 5xx is not such a case: Gmail can fail on its own side after accepting a
+ * message, so treating one as a refusal would invite a duplicate send. A 408
+ * is excluded for the same reason. Everything else in the 4xx range is a
+ * terminal client error, where nothing was delivered.
+ */
+export function isTerminalClientError(error: unknown): error is GoogleResponseError {
+  if (!(error instanceof GoogleResponseError)) return false
+  return error.status >= 400 && error.status < 500 && error.status !== 408
 }
 
 async function googleApiError(response: Response, service: string) {
