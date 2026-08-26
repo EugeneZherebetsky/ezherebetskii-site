@@ -102,4 +102,24 @@ describe('matchLostSend', () => {
   it('returns null when nothing matches', () => {
     expect(matchLostSend([], target)).toBeNull()
   })
+
+  it('ignores an identical message sent long after the attempt', () => {
+    // The same subject and recipient sent by hand hours later must not be
+    // attached to this attempt and frozen as the delivered message.
+    const later = message('sent-by-hand-later', { To: 'dana@example.com', Subject: 'IT leadership experience' }, '2026-08-01T16:00:00Z')
+    expect(matchLostSend([later], target)).toBeNull()
+  })
+
+  it('accepts a delivery inside the window but not one just outside it', () => {
+    const inside = message('inside', { To: 'dana@example.com', Subject: 'IT leadership experience' }, '2026-08-01T10:09:00Z')
+    const outside = message('outside', { To: 'dana@example.com', Subject: 'IT leadership experience' }, '2026-08-01T10:11:00Z')
+    expect(matchLostSend([inside], target)?.id).toBe('inside')
+    expect(matchLostSend([outside], target)).toBeNull()
+  })
+
+  it('prefers the original over a later duplicate inside a widened window', () => {
+    const original = message('original', { To: 'dana@example.com', Subject: 'IT leadership experience' }, '2026-08-01T10:00:05Z')
+    const duplicate = message('duplicate', { To: 'dana@example.com', Subject: 'IT leadership experience' }, '2026-08-01T14:00:00Z')
+    expect(matchLostSend([duplicate, original], target, 6 * 60 * 60_000)?.id).toBe('original')
+  })
 })

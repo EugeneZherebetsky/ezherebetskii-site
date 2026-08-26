@@ -270,7 +270,7 @@ export function Workspace({ session }: WorkspaceProps) {
   const [editingOutreach, setEditingOutreach] = useState<OutreachEmail | 'new' | null>(null)
   const [pendingOutreach, setPendingOutreach] = useState<PendingOutreachRecord | null>(() => readPendingOutreach(session.user.id))
   const [emailReplies, setEmailReplies] = useState<EmailReply[]>([])
-  const gmailAddressRef = useRef('')
+  const gmailAddressRef = useRef<{ token: string; address: string } | null>(null)
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [settingsPersisted, setSettingsPersisted] = useState(false)
   const [view, setView] = useState<AppView>('dashboard')
@@ -865,10 +865,17 @@ export function Workspace({ session }: WorkspaceProps) {
     }
   }
 
-  /** The signed-in mailbox address, fetched once per session. */
+  /**
+   * The signed-in mailbox address, cached against the access token that
+   * produced it. Reconnecting Google can authorize a different account, and a
+   * stale address would make that account's own outbound mail look like a
+   * reply from a stranger.
+   */
   async function gmailAddress(token: string) {
-    if (!gmailAddressRef.current) gmailAddressRef.current = await fetchGmailAddress(token)
-    return gmailAddressRef.current
+    if (gmailAddressRef.current?.token !== token) {
+      gmailAddressRef.current = { token, address: await fetchGmailAddress(token) }
+    }
+    return gmailAddressRef.current.address
   }
 
   /** Stores detected replies. Duplicates are ignored, so checking is repeatable. */
@@ -911,14 +918,28 @@ export function Workspace({ session }: WorkspaceProps) {
         else {
           await recordReplies('outreach', email.id, replies)
           const first = replies[0]
-          if (email.reply_status !== 'replied') {
-            await supabase
+          const found = `Reply found from ${first.from_address} on ${formatDateTime(first.received_at)}.`
+          if (email.reply_status === 'replied') {
+            setNotice(`${found} It was already marked as replied.`)
+          }
+          else {
+            const { data: updated, error: markError } = await supabase
               .from('outreach_emails')
               .update({ reply_status: 'replied', replied_at: first.received_at })
               .eq('id', email.id)
               .eq('version', email.version)
+              .select('*')
+              .maybeSingle()
+            if (markError) setError(`${found} Marking it as replied failed: ${markError.message}`)
+            else if (!updated) setError(`${found} It changed on another device, so it was not marked as replied. Reopen it and set the reply state yourself.`)
+            else {
+              // The open editor holds a snapshot, and this write moved the row
+              // on. Replacing it keeps the version current so the next save is
+              // not rejected as a conflict.
+              setEditingOutreach(updated as OutreachEmail)
+              setNotice(`${found} Marked as replied, so it stops appearing in follow-ups.`)
+            }
           }
-          setNotice(`Reply found from ${first.from_address} on ${formatDateTime(first.received_at)}. Marked as replied, so it stops appearing in follow-ups.`)
         }
       }
       await loadWorkspace()
@@ -955,10 +976,16 @@ export function Workspace({ session }: WorkspaceProps) {
         attemptedAtIso: email.send_attempted_at,
       })
       if (!match) {
-        setNotice('No matching message in your recent Sent mail, so it probably never went. Return it to draft if you agree, or check Gmail yourself if the send was a while ago.')
+        setNotice('No matching message in your recent Sent mail around the time of the attempt, so it probably never went. Return it to draft if you agree, or check Gmail yourself if the attempt was long ago.')
       }
       else {
         const sentAtEpoch = Number(match.internalDate)
+        const matchedAt = Number.isFinite(sentAtEpoch) ? formatDateTime(new Date(sentAtEpoch).toISOString()) : 'an unknown time'
+        // Recording this is effectively permanent: the row freezes once sent.
+        if (!window.confirm(`Found a message to ${email.recipient_email} with this subject, sent at ${matchedAt}. Record this attempt as delivered? Its content can no longer be changed afterwards.`)) {
+          setBusy(false)
+          return
+        }
         await recordOutreachSent({
           outreach_id: email.id,
           provider_message_id: match.id,

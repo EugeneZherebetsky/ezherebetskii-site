@@ -62,24 +62,37 @@ export function findThreadReplies(
     }))
 }
 
+/** Clock tolerance before the attempt, for skew between our clock and Gmail's. */
+const LOST_SEND_TOLERANCE_MS = 120_000
+
+/** How long after the attempt a delivery can still plausibly belong to it. */
+export const LOST_SEND_WINDOW_MS = 10 * 60_000
+
 /**
  * Finds our own message among recent sent mail, for a send whose response was
- * lost. Matching is on recipient, exact subject, and a send time at or after
- * the attempt, which is precise enough within one person's own mailbox.
+ * lost. Matching is on recipient, exact subject, and a send time inside a
+ * narrow window around the attempt.
+ *
+ * The window has an upper bound on purpose. Recipient and subject alone would
+ * also match the same message sent by hand hours later, and attaching that
+ * message id would permanently record this attempt as the one that was
+ * delivered.
  */
 export function matchLostSend(
   candidates: GmailMessageMetadata[],
   target: { recipient: string; subject: string; attemptedAtIso: string },
+  windowMs = LOST_SEND_WINDOW_MS,
 ): GmailMessageMetadata | null {
   const wantedTo = normalizeAddress(target.recipient)
   const wantedSubject = target.subject.trim().toLowerCase()
   const attemptedAt = new Date(target.attemptedAtIso).getTime()
   if (!Number.isFinite(attemptedAt)) return null
-  const floor = attemptedAt - 120_000
+  const floor = attemptedAt - LOST_SEND_TOLERANCE_MS
+  const ceiling = attemptedAt + windowMs
 
   const matches = candidates.filter((message) => {
     const at = receivedAt(message)
-    if (at === null || at < floor) return false
+    if (at === null || at < floor || at > ceiling) return false
     if (normalizeAddress(headerValue(message, 'To')) !== wantedTo) return false
     return headerValue(message, 'Subject').trim().toLowerCase() === wantedSubject
   })
