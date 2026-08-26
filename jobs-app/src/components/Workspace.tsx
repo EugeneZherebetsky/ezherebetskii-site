@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { cvToDraft, formatFileSize, safeStorageFilename, validateCVFile } from '../lib/cvs'
-import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, fetchGmailAddress, fetchGmailThread, fetchRecentSentMessages, hasGoogleAccess, isGoogleRefusal, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
+import { blobToBase64, buildRawEmail, clearGoogleAccess, createCalendarEvent, fetchGmailAddress, fetchGmailThread, fetchRecentSentMessages, hasGoogleAccess, isGoogleRefusal, isTerminalClientError, requestGoogleAccess, sendGmailMessage, validGoogleClientId, type EmailAttachment } from '../lib/google'
 import { findThreadReplies, matchLostSend, type DetectedReply } from '../lib/gmailReplies'
 import {
   ACTIVE_STATUSES,
@@ -1105,6 +1105,7 @@ export function Workspace({ session }: WorkspaceProps) {
       if (saved.error) throw saved.error
       if (!saved.data) throw new Error('This message changed on another device. Reload it, review the text, then send again.')
       const outreachId = saved.data.id as string
+      const savedVersion = saved.data.version as number
 
       const cv = payload.cv_id ? cvs.find((candidate) => candidate.id === payload.cv_id) : undefined
       if (payload.cv_id && !cv) throw new Error('The selected CV is no longer available. Choose another before sending.')
@@ -1125,10 +1126,15 @@ export function Workspace({ session }: WorkspaceProps) {
         .update({ status: 'sending', send_attempt_id: crypto.randomUUID(), send_attempted_at: attemptedAt })
         .eq('id', outreachId)
         .eq('status', 'draft')
+        // The raw MIME was built from the payload this client just wrote, so
+        // the claim must match that exact version. Without it a concurrent
+        // edit would be frozen as the delivered message while the older text
+        // is what actually left the mailbox.
+        .eq('version', savedVersion)
         .select('id')
         .maybeSingle()
       if (claimError) throw claimError
-      if (!claimed) throw new Error('This message is already being sent, or has been sent, on another device. Reload before trying again.')
+      if (!claimed) throw new Error('This message changed, or is already being sent, on another device. Reload it, review the text, then send again.')
       inFlight = true
 
       let gmailMessage: { id: string; threadId?: string }
@@ -1136,9 +1142,11 @@ export function Workspace({ session }: WorkspaceProps) {
         gmailMessage = await sendGmailMessage(token, raw)
       }
       catch (sendError) {
-        if (isGoogleRefusal(sendError)) {
-          // Gmail answered and refused, so nothing was delivered and the
-          // message can safely go back to being an editable draft.
+        if (isTerminalClientError(sendError)) {
+          // Gmail rejected the request outright, so nothing was delivered and
+          // the message can safely go back to being an editable draft. A
+          // server-side failure is deliberately excluded: Gmail can fail after
+          // accepting a message, and reverting would invite a duplicate.
           await supabase
             .from('outreach_emails')
             .update({ status: 'draft', send_attempt_id: null, send_attempted_at: null })
@@ -1267,6 +1275,12 @@ export function Workspace({ session }: WorkspaceProps) {
   async function deleteOutreach(email: OutreachEmail) {
     if (pendingOutreach?.outreach_id === email.id) {
       setError('Finish recording this sent message before deleting it.')
+      return
+    }
+    // While the outcome is unknown this row is the only thing preventing the
+    // same message being written and sent a second time.
+    if (email.status === 'sending') {
+      setError('This message may already have been delivered. Record whether it was sent, or return it to draft, before deleting it.')
       return
     }
     const warning = email.status === 'sent'

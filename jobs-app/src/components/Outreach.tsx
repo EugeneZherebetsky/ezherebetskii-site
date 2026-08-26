@@ -99,7 +99,7 @@ export function OutreachView({ emails, busy, onCompose, onOpen, onDelete }: Outr
                     <td>
                       <div className="row-actions">
                         <button className="button secondary" onClick={() => onOpen(email)}>{email.status === 'sent' ? 'View email' : email.status === 'sending' ? 'Resolve outcome' : 'Edit draft'}</button>
-                        <button className="button danger" disabled={busy} onClick={() => void onDelete(email)}>Delete</button>
+                        <button className="button danger" disabled={busy || email.status === 'sending'} title={email.status === 'sending' ? 'Resolve whether this was delivered before deleting it.' : undefined} onClick={() => void onDelete(email)}>Delete</button>
                       </div>
                     </td>
                   </tr>
