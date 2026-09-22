@@ -1,0 +1,23 @@
+node_modules/
+dist/
+build/
+
+# Env files - never commit real values
+.env
+.env.local
+.env.*.local
+.env.keys
+
+# Logs and caches
+*.log
+npm-debug.log*
+*.tsbuildinfo
+.vite/
+coverage/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
