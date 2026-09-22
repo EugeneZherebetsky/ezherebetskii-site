@@ -3,7 +3,7 @@ import type { Session } from '@supabase/supabase-js'
 import { AuthScreen } from './components/AuthScreen'
 import { Workspace } from './components/Workspace'
 import { clearGoogleAccess } from './lib/google'
-import { supabase } from './lib/supabase'
+import { readSession, watchSession } from './data/auth'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -18,8 +18,8 @@ export default function App() {
       setSession(nextSession)
       setReady(true)
     }
-    void supabase.auth.getSession().then(({ data }) => applySession(data.session))
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => applySession(nextSession))
+    void readSession().then(({ data }) => applySession(data.session))
+    const { data } = watchSession(applySession)
     return () => data.subscription.unsubscribe()
   }, [])
 
