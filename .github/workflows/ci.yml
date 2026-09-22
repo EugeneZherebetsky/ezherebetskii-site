@@ -29,6 +29,14 @@ jobs:
 
       - name: Unit tests
         run: npm test
+        env:
+          # Dummy values: the Supabase client module throws at import time
+          # without them. No real project is contacted in unit tests.
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: test-publishable-key
 
       - name: Type-check and production build
         run: npm run build
+        env:
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: test-publishable-key
