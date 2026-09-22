@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "format": "npx --yes prettier@3 --write .",
+    "format:check": "npx --yes prettier@3 --check ."
   },
   "dependencies": {
     "@supabase/supabase-js": "2.111.0",
