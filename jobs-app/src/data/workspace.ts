@@ -35,19 +35,32 @@ type WorkspaceListeners = {
   onNetworkingChange: () => void
 }
 
-/** Tables whose inserts and updates only need the workspace reloaded. */
-const WATCHED_TABLES = [
-  'jobs',
-  'cvs',
-  'user_settings',
-  'application_sends',
-  'contacts',
-  'star_stories',
-  'interview_preps',
-  'job_stage_events',
-  'cv_blocks',
-  'outreach_emails',
+type WatchedEvent = 'INSERT' | 'UPDATE' | '*'
+
+/**
+ * Tables whose changes only need the workspace reloaded, with the events each
+ * one listens for.
+ *
+ * Most tables deliberately skip DELETE: a filtered DELETE subscription cannot
+ * reliably identify the former owner, so those tables announce deletions on
+ * the private channel instead (the `*_broadcast_deletion` triggers in
+ * `supabase/migrations`). Keep this list in step with those triggers.
+ */
+export const WATCHED_TABLES: ReadonlyArray<readonly [table: string, events: readonly WatchedEvent[]]> = [
+  ['jobs', ['*']],
+  ['cvs', ['INSERT', 'UPDATE']],
+  ['user_settings', ['*']],
+  ['application_sends', ['INSERT']],
+  ['contacts', ['INSERT', 'UPDATE']],
+  ['star_stories', ['INSERT', 'UPDATE']],
+  ['interview_preps', ['INSERT', 'UPDATE']],
+  ['job_stage_events', ['INSERT']],
+  ['cv_blocks', ['INSERT', 'UPDATE']],
+  ['outreach_emails', ['INSERT', 'UPDATE']],
 ]
+
+/** Contact interactions also refresh the open contact's history. */
+const NETWORKING_EVENTS: readonly WatchedEvent[] = ['INSERT', 'UPDATE']
 
 /** Subscribes to this user's private synchronization channel. */
 export async function subscribeToWorkspace(session: Session, listeners: WorkspaceListeners): Promise<RealtimeChannel> {
@@ -55,11 +68,19 @@ export async function subscribeToWorkspace(session: Session, listeners: Workspac
   const filter = `user_id=eq.${session.user.id}`
   let channel = supabase.channel(`opportunity-desk:${session.user.id}`, { config: { private: true } })
 
-  for (const table of WATCHED_TABLES) {
-    channel = channel.on('postgres_changes', { event: '*', schema: 'public', table, filter }, listeners.onChange)
+  for (const [table, events] of WATCHED_TABLES) {
+    for (const event of events) {
+      channel = channel.on('postgres_changes', { event, schema: 'public', table, filter }, listeners.onChange)
+    }
+  }
+  for (const event of NETWORKING_EVENTS) {
+    channel = channel.on(
+      'postgres_changes',
+      { event, schema: 'public', table: 'contact_interactions', filter },
+      listeners.onNetworkingChange,
+    )
   }
   channel = channel
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'contact_interactions', filter }, listeners.onNetworkingChange)
     .on('broadcast', { event: 'cv_deleted' }, listeners.onChange)
     .on('broadcast', { event: 'record_deleted' }, listeners.onNetworkingChange)
 
