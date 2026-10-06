@@ -13,5 +13,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: false,
     setupFiles: ['./src/test/setup.ts'],
+    // Placeholders so modules that create the Supabase client can be imported
+    // without a local .env (as in CI). No test talks to Supabase.
+    env: {
+      VITE_SUPABASE_URL: 'https://test.invalid',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'test-publishable-key',
+    },
   },
 })
