@@ -13,7 +13,7 @@
     "format:check": "npx --yes prettier@3 --check ."
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.116.0",
+    "@supabase/supabase-js": "2.117.2",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
@@ -25,7 +25,7 @@
     "@vitejs/plugin-react": "6.1.1",
     "jsdom": "^29.1.1",
     "typescript": "7.0.2",
-    "vite": "8.3.0",
-    "vitest": "5.0.1"
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
   }
 }
