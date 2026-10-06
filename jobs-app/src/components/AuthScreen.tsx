@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { supabase } from '../lib/supabase'
+import { sendMagicLink as sendLink, signInWithPassword } from '../data/auth'
 
 function friendlySignInError(message: string) {
   const normalized = message.toLowerCase()
@@ -19,7 +19,7 @@ export function AuthScreen() {
     event.preventDefault()
     setBusy(true)
     setMessage('')
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { error } = await signInWithPassword(email, password)
     setMessage(error ? friendlySignInError(error.message) : 'Signed in. Loading your applications…')
     setBusy(false)
   }
@@ -31,10 +31,7 @@ export function AuthScreen() {
     }
     setBusy(true)
     setMessage('')
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
-    })
+    const { error } = await sendLink(email, window.location.origin)
     setMessage(error ? 'We could not send the sign-in link. Please try again.' : 'A secure sign-in link has been sent to your email.')
     setBusy(false)
   }
